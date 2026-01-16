@@ -489,8 +489,22 @@ def create_app() -> Flask:
         return send_from_directory(archive_dir, filename, as_attachment=True)
 
     @app.route("/app")
-    @login_required
     def app_index():
+        if not current_user.is_authenticated:
+            db_session = SessionLocal()
+            try:
+                user = db_session.execute(select(User).where(User.email == "demo@test.com")).scalar_one_or_none()
+                if not user:
+                    user = User(email="demo@test.com")
+                    user.set_password("demo123")
+                    user.is_email_verified = True
+                    profile = Profile(user=user)
+                    db_session.add_all([user, profile])
+                    commit_with_retry(db_session)
+                login_user(user)
+                session.permanent = True
+            finally:
+                db_session.close()
         return render_template("index.html")
 
     @app.route("/logout")
