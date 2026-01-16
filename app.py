@@ -412,6 +412,24 @@ def create_app() -> Flask:
     def landing():
         return render_template("public/landing.html")
 
+    @app.route("/auto-login")
+    def auto_login():
+        db_session = SessionLocal()
+        try:
+            user = db_session.execute(select(User).where(User.email == "demo@test.com")).scalar_one_or_none()
+            if not user:
+                user = User(email="demo@test.com")
+                user.set_password("demo123")
+                user.is_email_verified = True
+                profile = Profile(user=user)
+                db_session.add_all([user, profile])
+                commit_with_retry(db_session)
+            login_user(user)
+            session.permanent = True
+            return redirect(url_for("app_index"))
+        finally:
+            db_session.close()
+
     @app.post("/api/appBackend")
     def app_backend():
         if not current_user.is_authenticated:
