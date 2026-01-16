@@ -36,3 +36,8 @@ externalPort = 80
 [deployment]
 deploymentTarget = "autoscale"
 run = ["gunicorn", "--bind=0.0.0.0:5000", "--reuse-port", "app:create_app()"]
+
+[userenv]
+
+[userenv.shared]
+SECRET_KEY = "dev-secret-key-for-session-persistence-12345"

@@ -55,7 +55,8 @@ def create_app() -> Flask:
     app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(16))
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SAMESITE="None",
+        SESSION_COOKIE_SECURE=True,
         SEND_FILE_MAX_AGE_DEFAULT=0,
         TEMPLATES_AUTO_RELOAD=True,
         PERMANENT_SESSION_LIFETIME=dt.timedelta(days=1),
