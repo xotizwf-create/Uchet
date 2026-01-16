@@ -90,10 +90,17 @@
       var plansHtml = groupedPlans.length ? groupedPlans.map(function (grp, grpIndex) {
         var rows = grp.items.map(function (p) {
           var metaText = p.contractNumber ? String(p.contractNumber) : 'Потребность';
+          var statusColor = '#e2e8f0';
+          if (p.status === 'В работе') statusColor = '#f59e0b';
+          else if (p.status === 'Выполнен') statusColor = '#10b981';
+
           return '' +
             '<div class="home-v2-delivery-card card" oncontextmenu="UIHome.openPlanContract(event, \'' + (p.contractId || '') + '\')" onclick="UIHome.openPlanContract(event, \'' + (p.contractId || '') + '\')">' +
               '<div class="home-v2-delivery-head">' +
-                '<div class="home-v2-delivery-org">' + escapeHtml(p.org || '-') + '</div>' +
+                '<div style="display:flex;align-items:center;gap:8px;">' +
+                  '<span style="width:8px;height:8px;border-radius:50%;background:' + statusColor + ';"></span>' +
+                  '<div class="home-v2-delivery-org">' + escapeHtml(p.org || '-') + '</div>' +
+                '</div>' +
                 '<div class="home-v2-delivery-qty">' + (p.qty || 0) + ' шт</div>' +
               '</div>' +
               '<div class="home-v2-delivery-item">' + escapeHtml(p.item || '') + '</div>' +
@@ -321,13 +328,13 @@
           '.home-v2-timeline-dot{width:10px;height:10px;border-radius:50%;background:#cbd5f5;flex-shrink:0;}'+
           '.home-v2-timeline-dot.active{background:#4f46e5;box-shadow:0 0 0 6px rgba(99,102,241,0.16);}'+
           '.home-v2-timeline-dot.muted{background:#e2e8f0;}'+
-          '.home-v2-timeline-line{flex:1;width:2px;background:rgba(148,163,184,0.45);border-radius:999px;margin:4px 0;}'+
+          '.home-v2-timeline-line{flex:1;width:2px;background:#c7d2fe;border-radius:999px;margin:4px 0;}'+
           '.home-v2-timeline-marker.is-empty .home-v2-timeline-line{display:none;}'+
-          '.home-v2-timeline-marker.is-empty{padding-top:4px;}'+
+          '.home-v2-timeline-marker.is-empty{padding-top:14px;}'+
           '.home-v2-timeline-content{flex:1;}'+
           '.home-v2-timeline-date{display:flex;align-items:center;margin-bottom:10px;min-height:28px;}'+
           '.home-v2-date-pill{display:inline-flex;align-items:center;background:#eef2ff;border-radius:10px;padding:6px 10px;color:#4f46e5;font-weight:700;font-size:12px;}'+
-          '.home-v2-timeline-note{color:#94a3b8;font-weight:600;font-size:12px;min-height:18px;display:flex;align-items:center;}'+
+          '.home-v2-timeline-note{color:#94a3b8;font-weight:600;font-size:12px;min-height:10px;display:flex;align-items:center;margin-top:0;}'+
           '.home-v2-delivery-card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px 14px;box-shadow:0 10px 18px rgba(15,23,42,0.06);cursor:pointer;margin-bottom:10px;}'+
           '.home-v2-delivery-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}'+
           '.home-v2-delivery-org{font-weight:700;color:#0f172a;flex:1;font-size:13px;}'+
