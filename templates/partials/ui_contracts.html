@@ -134,25 +134,25 @@ var UIContracts = (function () {
         '.contracts-refresh-btn{width:36px;height:36px;border-radius:10px;border:none;background:#5c5ce0;color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(92,92,224,0.2);}'+
         '.contracts-refresh-btn svg{width:18px;height:18px;}'+
         '.contracts-subbar{display:block;padding:0;margin:10px 0 0;background:transparent;border:none;position:sticky;top:0;z-index:40;}'+
-        '.contracts-filters-card{display:flex;align-items:center;gap:16px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:12px 20px;box-shadow:0 4px 20px rgba(0,0,0,0.03);flex-wrap:nowrap;width:100%;box-sizing:border-box;overflow:hidden;}'+
+        .contracts-filters-card{display:flex;align-items:center;gap:16px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:12px 20px;box-shadow:0 4px 20px rgba(0,0,0,0.03);flex-wrap:nowrap;width:100%;box-sizing:border-box;overflow:hidden; min-height:64px;}'+
         '.contracts-filters-card > *{flex:0 0 auto;}'+
-        '.contracts-filter{display:flex;flex-direction:column;gap:4px;min-width:100px;}'+
-        '.contracts-filter .lbl{font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;}'+
-        '.contracts-filter select,.contracts-filter input[type="search"],.contracts-filter input[type="text"]{height:40px;border:none;background:transparent;font-size:14px;font-weight:500;color:#1f2937;padding:0;box-shadow:none;}'+
+        '.contracts-filter{display:flex;flex-direction:row;align-items:center;min-width:auto; height:100%;}'+
+        '.contracts-filter .lbl{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;margin-right:8px;}'+
+        '.contracts-filter select,.contracts-filter input[type="search"],.contracts-filter input[type="text"]{height:40px;border:none;background:transparent;font-size:14px;font-weight:600;color:#1f2937;padding:0;box-shadow:none;}'+
         '.contracts-filter select:focus,.contracts-filter input[type="search"]:focus,.contracts-filter input[type="text"]:focus{outline:none;border-color:#c7d2fe;box-shadow:0 0 0 2px rgba(99,102,241,0.15);}'+
         '.contracts-filter input::placeholder{color:#94a3b8;font-weight:600;}'+
         '.contracts-search{position:relative;min-width:180px;}'+
-        '.contracts-search input{padding-left:36px;height:40px;border-radius:10px;background:#f8fafc;width:100%;}'+
+        '.contracts-search input{padding-left:36px;height:40px;border-radius:12px;background:#f8fafc;width:100%;border:none;font-weight:500;}'+
         '.contracts-search .search-ico{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:16px;height:16px;opacity:.7;background-repeat:no-repeat;background-size:16px 16px;background-image:url("data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.65" y1="16.65" x2="21" y2="21"/></svg>");}'+
         '.contracts-sort-group{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;}'+
-        '.contracts-sort-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:999px;border:1px solid transparent;background:transparent;font-size:12px;font-weight:700;color:#64748b;cursor:pointer;box-shadow:none;}'+
-        '.contracts-sort-btn.active{background:#eef2ff;color:#4f46e5;border-color:#c7d2fe;}'+
+        '.contracts-sort-btn{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 16px;border-radius:10px;border:none;background:transparent;font-size:13px;font-weight:600;color:#64748b;cursor:pointer;transition:all 0.2s;}'+
+        '.contracts-sort-btn.active{background:#eef2ff;color:#4f46e5;}'+
         '.contracts-sort-icon{font-size:11px;color:inherit;opacity:.7;}'+
-        '.contracts-divider{width:1px;height:24px;background:#e2e8f0;margin:0 4px;}'+
+        '.contracts-divider{width:1px;height:28px;background:#f1f5f9;margin:0 8px;}'+
         '.contracts-actions-right{margin-left:auto;display:flex;flex-direction:row;align-items:center;gap:8px;min-width:auto;}'+
         '.contracts-clear-btn{background:none;border:none;color:#94a3b8;font-size:12px;font-weight:700;cursor:pointer;}'+
         '.contracts-clear-btn:hover{color:#64748b;}'+
-        '.contracts-add-btn{width:36px;height:36px;border-radius:10px;border:none;background:#0f172a;color:#fff;font-size:20px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 6px 14px rgba(15,23,42,0.3);}'+
+        '.contracts-add-btn{width:38px;height:38px;border-radius:12px;border:none;background:#0f172a;color:#fff;font-size:22px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 10px 20px rgba(15,23,42,0.2);margin-left:8px;}'+
         '@media (max-width: 1200px){.contracts-filters-card{flex-wrap:wrap;}}'+
         'body.theme-dark .contracts-toolbar__main{color:#e2e8f0;}'+
         'body.theme-dark .contracts-toolbar__sub{color:#94a3b8;}'+
@@ -168,15 +168,15 @@ var UIContracts = (function () {
       '</style>' +
       '<div class="contracts-subbar">' +
         '<div class="contracts-filters-card">' +
-          '<div class="contracts-filter contracts-search">' +
-            '<span class="lbl">&nbsp;</span>' +
+          '<div class="contracts-filter contracts-search" style="margin-right:auto; height:40px;">' +
+            
             '<span class="search-ico"></span>' +
-            '<input id="contractsSearch" type="search" placeholder="Поиск по номеру, организации..." autocomplete="off">' +
+            '<input id="contractsSearch" type="search" placeholder="Поиск по номеру, организации..." style="border:none; background:transparent; font-weight:500;" autocomplete="off">' +
           '</div>' +
           '<div class="contracts-divider"></div>' +
           '<div class="contracts-filter">' +
             '<span class="lbl">СТАТУС:</span>' +
-            '<select id="contractsStatusFilter">' +
+            '<select id="contractsStatusFilter" style="font-weight:600; cursor:pointer;"><option value="" disabled selected hidden>Все статусы</option>' +
               '<option value="all">Все статусы</option>' +
               '<option value="inwork">В работе</option>' +
               '<option value="missingDocs">Нет документов</option>' +
