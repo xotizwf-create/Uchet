@@ -91,8 +91,9 @@
         var rows = grp.items.map(function (p) {
           var metaText = p.contractNumber ? String(p.contractNumber) : 'Потребность';
           var statusColor = '#e2e8f0';
-          if (p.status === 'В работе') statusColor = '#f59e0b';
-          else if (p.status === 'Выполнен') statusColor = '#10b981';
+          var pStatus = (p.status || '').trim();
+          if (pStatus === 'В работе' || pStatus === 'В РАБОТЕ') statusColor = '#f59e0b';
+          else if (pStatus === 'Выполнен' || pStatus === 'ВЫПОЛНЕН') statusColor = '#10b981';
 
           return '' +
             '<div class="home-v2-delivery-card card" oncontextmenu="UIHome.openPlanContract(event, \'' + (p.contractId || '') + '\')" onclick="UIHome.openPlanContract(event, \'' + (p.contractId || '') + '\')">' +
