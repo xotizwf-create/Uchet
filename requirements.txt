@@ -18,3 +18,13 @@ requests
 SQLAlchemy
 telegram
 gunicorn
+Flask
+Flask-Login
+Flask-Migrate
+Flask-SQLAlchemy
+gunicorn
+psycopg2-binary
+python-dotenv
+python-telegram-bot
+requests
+SQLAlchemy
