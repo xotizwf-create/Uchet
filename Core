@@ -1,0 +1,208 @@
+// Core.gs
+var Core = (function() {
+
+  // Общая конфигурация приложения
+  var config = {
+    logEnabled: true,  // включить/выключить логирование в Logger
+
+    sheets: {
+      menu:         'Меню',
+      contracts:    'Реестр контрактов',
+
+      // Склад
+      stockBalance: 'Склад_Остатки',
+      stockIncome:  'Склад_Приходы',
+      stockMoves:   'Склад_Движения',
+      stockExpenses:'Склад_Расходы',
+      stockItems:   'Склад_Товары',          // регистр товаров
+
+      // Прайс-лист
+      price:        'Прайс-лист на продукцию'
+    },
+
+    drive: {
+      // Папка, куда складываются файлы контрактов для стартовой страницы
+      contractsFolderId: '1bqgeqpiNOTypw1qlC2UbGoVmwfbA2gAu',
+      archiveFolderName: 'Архивы',
+      archiveFolderId: '1-MDO_7oK3ZGkW60ZDEwPEuIwYGiUQb13'
+    }
+  };
+
+  /**
+   * Простой лог
+   * @param {string} msg
+   */
+  function log(msg) {
+    if (config.logEnabled) {
+      Logger.log('[LOG] ' + msg);
+    }
+  }
+
+  /**
+   * Лог ошибок
+   * @param {Error|string} err
+   */
+  function error(err) {
+    if (err && err.stack) {
+      Logger.log('[ERROR] ' + err.stack);
+    } else {
+      Logger.log('[ERROR] ' + err);
+    }
+  }
+
+  /**
+   * Получить лист по имени (без автосоздания)
+   * @param {string} name
+   * @returns {GoogleAppsScript.Spreadsheet.Sheet|null}
+   */
+  function getSheet(name) {
+    return SpreadsheetApp.getActive().getSheetByName(name);
+  }
+
+  /**
+   * Убедиться, что лист существует.
+   * Если нет — создаём и при необходимости проставляем заголовки.
+   *
+   * @param {string} name    - имя листа
+   * @param {Array<string>} [headers] - шапка (одна строка)
+   * @returns {GoogleAppsScript.Spreadsheet.Sheet}
+   */
+  function ensureSheet(name, headers) {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName(name);
+
+    if (!sheet) {
+      sheet = ss.insertSheet(name);
+      if (headers && headers.length) {
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      }
+    }
+
+    return sheet;
+  }
+
+  /**
+   * Убедиться, что шапка соответствует ожидаемой.
+   * Выполняется только при несоответствии, чтобы не делать лишних операций записи.
+   *
+   * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+   * @param {Array<string>} headers
+   */
+  function ensureHeaders(sheet, headers) {
+    if (!headers || !headers.length) return;
+
+    var range = sheet.getRange(1, 1, 1, headers.length);
+    var values = range.getValues();
+    var current = values && values[0] ? values[0] : [];
+
+    var needUpdate = false;
+    for (var i = 0; i < headers.length; i++) {
+      if (current[i] !== headers[i]) {
+        needUpdate = true;
+        break;
+      }
+    }
+
+    if (needUpdate) {
+      range.setValues([headers]);
+    }
+  }
+
+  /**
+   * Быстрое чтение только заполненной части листа.
+   * Использует getLastRow()/getLastColumn() вместо getDataRange(),
+   * чтобы не тянуть лишние пустые строки и ускорять последующую обработку.
+   *
+   * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+   * @param {number} [columns] - количество читаемых колонок (если не задано, читаем все занятые)
+   * @returns {Array<Array<*>>}
+   */
+  function readSheetValues(sheet, columns) {
+    var lastRow = sheet.getLastRow();
+    if (!lastRow) return [];
+
+    var lastCol = columns || sheet.getLastColumn();
+    return sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  }
+
+  return {
+    config:      config,
+    log:         log,
+    error:       error,
+    getSheet:    getSheet,
+    ensureSheet: ensureSheet,
+    ensureHeaders: ensureHeaders,
+    readSheetValues: readSheetValues
+  };
+
+})();
+
+/**
+ * include() для HTML-шаблонов:
+ * <?!= include('имя_файла'); ?>
+ */
+function include(filename) {
+  return HtmlService
+    .createHtmlOutputFromFile(filename)
+    .getContent();
+}
+
+/**
+ * Меню в самой Google-таблице.
+ * Даёт два пункта:
+ *  - Открыть интерфейс ПП (диалог)
+ *  - Инициализировать структуру (создаёт листы и заголовки)
+ */
+function onOpen(e) {
+  try {
+    if (typeof Archive !== 'undefined' && Archive.ensureDailyBackupTrigger) {
+      Archive.ensureDailyBackupTrigger();
+    }
+    if (typeof ensureContractsWatchTrigger === 'function') {
+      ensureContractsWatchTrigger();
+    }
+    var ui = SpreadsheetApp.getUi();
+    ui.createMenu('ПП')
+      .addItem('Открыть интерфейс', 'showMini1CDialog')
+      .addSeparator()
+      .addItem('Инициализировать структуру', 'initMini1C')  // функция из InitMini1C.gs
+      .addToUi();
+  } catch (err) {
+    Core.error(err);
+  }
+}
+
+/**
+ * Показ интерфейса как модального диалога в таблице.
+ * Использует тот же ui_shell.html, что и веб-приложение.
+ */
+function showMini1CDialog() {
+  if (typeof Archive !== 'undefined' && Archive.ensureDailyBackupTrigger) {
+    Archive.ensureDailyBackupTrigger();
+  }
+  var tpl = HtmlService.createTemplateFromFile('ui_shell');
+
+  var html = tpl.evaluate()
+    .setTitle('ПП')
+    .setWidth(1180)
+    .setHeight(720);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'ПП');
+}
+
+/**
+ * Веб-интерфейс "ПП" как отдельное веб-приложение.
+ * Использует тот же ui_shell.html, что и диалог в таблицах.
+ */
+function doGet(e) {
+  if (typeof Archive !== 'undefined' && Archive.ensureDailyBackupTrigger) {
+    Archive.ensureDailyBackupTrigger();
+  }
+  var tpl = HtmlService.createTemplateFromFile('ui_shell');
+
+  var html = tpl.evaluate()
+    .setTitle('ПП')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL); // позволяет открывать в iframe при необходимости
+
+  return html;
+}

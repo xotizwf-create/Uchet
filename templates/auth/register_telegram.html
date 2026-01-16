@@ -1,0 +1,40 @@
+{% extends "auth/layout.html" %}
+{% block content %}
+  <h1>Вход через Telegram</h1>
+  <p class="subtitle">Откройте бота, нажмите Start, затем подтвердите код.</p>
+  <div class="telegram-panel">
+    <a
+      class="primary-btn"
+      href="https://t.me/{{ bot_username }}?start={{ token }}"
+      target="_blank"
+      rel="noopener"
+    >
+      Открыть Telegram-бота
+    </a>
+    <div class="status" data-telegram-status="pending">
+      Ожидание подтверждения в Telegram...
+    </div>
+    <div class="token-hint">Token: {{ token }}</div>
+  </div>
+  <script>
+    const token = "{{ token }}";
+    const poll = () => {
+      fetch(`/auth/telegram/status?token=${token}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.expired) {
+            document.querySelector(".status").textContent =
+              "Ссылка устарела. Обновите страницу.";
+            return;
+          }
+          if (data.linked) {
+            window.location.href = `/auth/verify?token=${token}`;
+          } else {
+            setTimeout(poll, 2000);
+          }
+        })
+        .catch(() => setTimeout(poll, 3000));
+    };
+    poll();
+  </script>
+{% endblock %}

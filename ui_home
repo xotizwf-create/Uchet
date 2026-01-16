@@ -1,0 +1,941 @@
+<script>
+  // Главная панель
+  var UIHome = (function () {
+    var STORAGE_USER_KEY = 'gs-storage-user-id';
+    var currentPeriod = { from: '', to: '' };
+    var lastData = null;
+    var driveData = { files: [] };
+    var driveFilter = '';
+    var driveMenuEl = null;
+    var driveImportInFlight = false;
+    var selectedStockItem = '';
+    var readyReported = false;
+    var stockMenuEl = null;
+
+    function generateStorageUserId() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+      }
+      return 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+    }
+
+    function getStorageUserId() {
+      var stored = localStorage.getItem(STORAGE_USER_KEY);
+      if (!stored) {
+        stored = generateStorageUserId();
+        localStorage.setItem(STORAGE_USER_KEY, stored);
+      }
+      return stored;
+    }
+
+    function markReady() {
+      if (readyReported) return;
+      readyReported = true;
+      if (window.AppModules && window.AppModules.markReady) {
+        window.AppModules.markReady('home');
+      }
+    }
+
+    function load() {
+      setToolbarContent('');
+      setSubtoolbarContent('');
+      setBottomPanelTitles('', '');
+      fetchData();
+    }
+
+    function fetchData() {
+      var guard = window.createTabGuard ? window.createTabGuard('home') : null;
+      setDataAreaContent('<div class="panel-loading"><div class="spinner"></div><div>Готовим главное окно...</div></div>');
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (!res || !res.success) {
+            if (guard && guard.isActive()) {
+              setDataAreaContent('Ошибка загрузки: ' + (res && res.error ? res.error : 'неизвестная ошибка'));
+            }
+            markReady();
+            return;
+          }
+          lastData = res.data || {};
+          currentPeriod.from = (lastData.period && lastData.period.from) || '';
+          currentPeriod.to = (lastData.period && lastData.period.to) || '';
+          driveData = lastData.drive || { files: [] };
+          if (guard && guard.isActive()) {
+            render();
+          }
+          markReady();
+        })
+        .withFailureHandler(function (err) {
+          if (guard && guard.isActive()) {
+            setDataAreaContent('Ошибка загрузки: ' + (err || 'неизвестная ошибка'));
+          }
+          markReady();
+        })
+        .appBackend({
+          module: 'dashboard',
+          action: 'overview',
+          payload: {
+            fromDate: currentPeriod.from,
+            toDate: currentPeriod.to,
+            userId: getStorageUserId()
+          }
+        });
+    }
+
+    function render() {
+      var counts = (lastData && lastData.counts) || { done: 0, inwork: 0 };
+      var plans = (lastData && lastData.plans) || [];
+      var balances = (lastData && lastData.balances) || [];
+
+      var groupedPlans = groupPlans(plans);
+      var plansHtml = groupedPlans.length ? groupedPlans.map(function (grp, grpIndex) {
+        var rows = grp.items.map(function (p) {
+          var metaText = p.contractNumber ? String(p.contractNumber) : 'Потребность';
+          return '' +
+            '<div class="home-v2-delivery-card" oncontextmenu="UIHome.openPlanContract(event, \'' + (p.contractId || '') + '\')" onclick="UIHome.openPlanContract(event, \'' + (p.contractId || '') + '\')">' +
+              '<div class="home-v2-delivery-head">' +
+                '<div class="home-v2-delivery-dot"></div>' +
+                '<div class="home-v2-delivery-org">' + escapeHtml(p.org || '—') + '</div>' +
+                '<div class="home-v2-delivery-qty">' + (p.qty || 0) + ' шт</div>' +
+              '</div>' +
+              '<div class="home-v2-delivery-item">' + escapeHtml(p.item || '') + '</div>' +
+              '<div class="home-v2-delivery-footer">' +
+                '<span>' + escapeHtml(metaText) + '</span>' +
+                '<span class="home-v2-delivery-arrow">↗</span>' +
+              '</div>' +
+            '</div>';
+        }).join('');
+
+        return '' +
+          '<div class="home-v2-timeline-group">' +
+            '<div class="home-v2-timeline-marker">' +
+              '<span class="home-v2-timeline-dot' + (grpIndex === 0 ? ' active' : '') + '"></span>' +
+              '<span class="home-v2-timeline-line"></span>' +
+            '</div>' +
+            '<div class="home-v2-timeline-content">' +
+              '<div class="home-v2-timeline-date">' +
+                '<span class="home-v2-timeline-day">' + escapeHtml(grp.dayName || '') + '</span>' +
+                '<span class="home-v2-timeline-date-text">' + escapeHtml(grp.dateStr || '') + '</span>' +
+              '</div>' +
+              rows +
+            '</div>' +
+          '</div>';
+      }).join('') : '' +
+        '<div class="home-v2-timeline-group">' +
+          '<div class="home-v2-timeline-marker">' +
+            '<span class="home-v2-timeline-dot muted"></span>' +
+          '</div>' +
+          '<div class="home-v2-timeline-content">' +
+            '<div class="home-v2-empty">Нет других поставок</div>' +
+          '</div>' +
+        '</div>';
+
+      var stockHtml = balances.length ? balances.map(function (b, idx) {
+        return '' +
+          '<div class="home-v2-stock-row home-stock-row" data-item="' + escapeAttr(b.item || '') + '">' +
+            '<div class="home-v2-stock-index">' + (idx + 1) + '</div>' +
+            '<div class="home-v2-stock-name">' + escapeHtml(b.item || '') + '</div>' +
+            '<div class="home-v2-stock-qty">' + (b.qty || 0) + '</div>' +
+          '</div>';
+      }).join('') : '<div class="home-v2-empty">Нет товаров на складе.</div>';
+
+      var periodText = (currentPeriod.from && currentPeriod.to)
+        ? (formatDateRu(currentPeriod.from) + ' — ' + formatDateRu(currentPeriod.to))
+        : 'Текущая неделя';
+
+      var driveList = buildDriveListHtml();
+      var fromValue = escapeAttr(formatDateRu(currentPeriod.from));
+      var toValue = escapeAttr(formatDateRu(currentPeriod.to));
+
+      var html = '' +
+        '<div class="home-v2">' +
+          '<div class="home-v2-header">' +
+            '<div>' +
+              '<div class="home-v2-title">Главная <span>/ Обзор</span></div>' +
+              '<div class="home-v2-subtitle">Добро пожаловать назад, Администратор</div>' +
+            '</div>' +
+            '<div class="home-v2-controls">' +
+              '<div class="home-v2-date-range">' +
+                '<label class="home-v2-date">' +
+                  '<span class="home-v2-calendar">📅</span>' +
+                  '<input id="homeFrom" type="text" placeholder="дд.мм.гггг" value="' + fromValue + '" onchange="UIHome.onPeriodChange()">' +
+                '</label>' +
+                '<span class="home-v2-date-sep">—</span>' +
+                '<label class="home-v2-date">' +
+                  '<input id="homeTo" type="text" placeholder="дд.мм.гггг" value="' + toValue + '" onchange="UIHome.onPeriodChange()">' +
+                '</label>' +
+              '</div>' +
+              '<button class="home-v2-refresh" onclick="UIHome.reload()" title="Обновить">⟳</button>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="home-v2-grid">' +
+            '<div class="home-v2-card">' +
+              '<div class="home-v2-card-head">' +
+                '<div>' +
+                  '<div class="home-v2-card-title">Контракты</div>' +
+                  '<div class="home-v2-card-sub">Статистика выполнения</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="home-v2-contracts">' +
+                '<div class="home-v2-metric done">' +
+                  '<div class="home-v2-metric-label">Завершено</div>' +
+                  '<div class="home-v2-metric-value">' + (counts.done || 0) + '</div>' +
+                '</div>' +
+                '<div class="home-v2-metric inwork">' +
+                  '<div class="home-v2-metric-label">В работе</div>' +
+                  '<div class="home-v2-metric-value">' + (counts.inwork || 0) + '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="home-v2-actions">' +
+                '<button class="home-v2-btn primary" onclick="UIHome.openContracts()">Перейти</button>' +
+                '<button class="home-v2-btn ghost" onclick="UIHome.createContract()">Создать</button>' +
+                '<button class="home-v2-btn outline" onclick="UIHome.showUploadModal()">Загрузить</button>' +
+                '<button class="home-v2-btn outline" onclick="UIHome.openCommercials()">Создать КП</button>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="home-v2-card">' +
+              '<div class="home-v2-card-head">' +
+                '<div>' +
+                  '<div class="home-v2-card-title">Склад</div>' +
+                  '<div class="home-v2-card-sub">Текущие остатки</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="home-v2-stock-list home-stock-list">' + stockHtml + '</div>' +
+            '</div>' +
+
+            '<div class="home-v2-card">' +
+              '<div class="home-v2-card-head">' +
+                '<div>' +
+                  '<div class="home-v2-card-title">Поставки</div>' +
+                  '<div class="home-v2-card-sub">Ближайшие отгрузки</div>' +
+                '</div>' +
+                '<div class="home-v2-pill">' + escapeHtml(periodText) + '</div>' +
+              '</div>' +
+              '<div class="home-v2-timeline">' + plansHtml + '</div>' +
+            '</div>' +
+
+            '<div class="home-v2-card">' +
+              '<div class="home-v2-card-head">' +
+                '<div>' +
+                  '<div class="home-v2-card-title">Файлы</div>' +
+                  '<div class="home-v2-card-sub">Документы контрактов</div>' +
+                '</div>' +
+                '<div class="home-v2-pill success">Внутреннее хранилище</div>' +
+              '</div>' +
+              '<div class="home-v2-files-actions">' +
+                '<button class="home-v2-btn primary" onclick="UIHome.showUploadModal()">Загрузить контракт</button>' +
+                '<button class="home-v2-btn secondary" onclick="UIHome.runContractsImport()">Получить контракты</button>' +
+                '<button class="home-v2-btn secondary" onclick="UIHome.refreshDrive()">Обновить</button>' +
+                '<button class="home-v2-btn secondary" onclick="UIHome.refreshDrive()">Открыть папку</button>' +
+              '</div>' +
+              '<div class="home-v2-search">' +
+                '<input id="homeDriveSearch" type="search" placeholder="Поиск документов..." value="' + escapeAttr(driveFilter) + '">' +
+              '</div>' +
+              '<div id="homeDriveList" class="home-v2-files home-drive-list">' + driveList + '</div>' +
+              '<div class="home-v2-more">Показать все →</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<style>' +
+          '.home-v2{padding:28px 26px 32px;}' +
+          '.home-v2-header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:22px;}' +
+          '.home-v2-title{font-size:28px;font-weight:800;color:#0f172a;}'+
+          '.home-v2-title span{font-weight:400;color:#94a3b8;}'+
+          '.home-v2-subtitle{margin-top:6px;color:#64748b;font-size:14px;font-weight:500;}'+
+          '.home-v2-controls{display:flex;align-items:center;gap:14px;}'+
+          '.home-v2-date-range{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:6px;}'+
+          '.home-v2-date{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:12px;background:#f8fafc;}'+
+          '.home-v2-date input{border:none;background:transparent;font-weight:600;font-size:14px;color:#1f2937;outline:none;width:92px;}'+
+          '.home-v2-date-sep{color:#cbd5f5;font-weight:700;}'+
+          '.home-v2-calendar{color:#6366f1;}'+
+          '.home-v2-refresh{width:42px;height:42px;border:none;border-radius:14px;background:#4f46e5;color:#fff;font-size:18px;font-weight:700;cursor:pointer;box-shadow:0 8px 18px rgba(79,70,229,0.2);}'+
+          '.home-v2-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;}'+
+          '.home-v2-card{background:#fff;border:1px solid #e2e8f0;border-radius:24px;padding:20px 20px 18px;box-shadow:0 8px 20px rgba(15,23,42,0.06);display:flex;flex-direction:column;min-height:420px;}'+
+          '.home-v2-card-head{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;}'+
+          '.home-v2-card-title{font-size:18px;font-weight:800;color:#0f172a;}'+
+          '.home-v2-card-sub{font-size:12px;color:#94a3b8;font-weight:600;margin-top:4px;}'+
+          '.home-v2-contracts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:16px;}'+
+          '.home-v2-metric{border-radius:20px;padding:16px;display:flex;flex-direction:column;gap:8px;min-height:120px;justify-content:space-between;}'+
+          '.home-v2-metric.done{background:#ecfdf3;border:1px solid #bbf7d0;color:#166534;}'+
+          '.home-v2-metric.inwork{background:#fffbeb;border:1px solid #fde68a;color:#92400e;}'+
+          '.home-v2-metric-label{text-transform:uppercase;font-size:11px;font-weight:800;letter-spacing:0.08em;}'+
+          '.home-v2-metric-value{font-size:32px;font-weight:800;color:#0f172a;}'+
+          '.home-v2-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:auto;}'+
+          '.home-v2-btn{border:none;border-radius:14px;padding:10px 12px;font-weight:700;font-size:13px;cursor:pointer;}'+
+          '.home-v2-btn.primary{background:#4f46e5;color:#fff;box-shadow:0 10px 18px rgba(79,70,229,0.2);}'+
+          '.home-v2-btn.ghost{background:#eef2ff;color:#1e1b4b;}'+
+          '.home-v2-btn.outline{background:#fff;border:1px solid #e2e8f0;color:#334155;}'+
+          '.home-v2-btn.secondary{background:#f1f5f9;border:1px solid #e2e8f0;color:#475569;}'+
+          '.home-v2-stock-list{display:flex;flex-direction:column;gap:10px;overflow:auto;max-height:320px;padding-right:4px;}'+
+          '.home-v2-stock-row{display:flex;align-items:center;gap:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:10px 12px;cursor:pointer;transition:all 0.15s;}'+
+          '.home-v2-stock-row:hover{border-color:#c7d2fe;box-shadow:0 6px 12px rgba(99,102,241,0.08);}'+
+          '.home-v2-stock-row.active{border-color:#6366f1;box-shadow:0 6px 12px rgba(99,102,241,0.12);}'+
+          '.home-v2-stock-index{width:28px;height:28px;border-radius:10px;background:#fff;border:1px solid #e2e8f0;display:flex;align-items:center;justify-content:center;font-weight:700;color:#64748b;}'+
+          '.home-v2-stock-name{flex:1;font-weight:700;color:#334155;font-size:14px;}'+
+          '.home-v2-stock-qty{min-width:48px;text-align:center;font-weight:700;font-size:13px;color:#475569;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:6px 8px;}'+
+          '.home-v2-pill{background:#eef2ff;color:#4f46e5;font-weight:700;font-size:12px;padding:6px 10px;border-radius:12px;}'+
+          '.home-v2-pill.success{background:#ecfdf3;color:#16a34a;border:1px solid #bbf7d0;}'+
+          '.home-v2-timeline{display:flex;flex-direction:column;gap:18px;overflow:auto;max-height:320px;padding-left:4px;}'+
+          '.home-v2-timeline-group{display:flex;gap:12px;position:relative;}'+
+          '.home-v2-timeline-marker{position:relative;display:flex;flex-direction:column;align-items:center;}'+
+          '.home-v2-timeline-dot{width:14px;height:14px;border-radius:50%;background:#cbd5f5;}'+
+          '.home-v2-timeline-dot.active{background:#4f46e5;box-shadow:0 0 0 6px rgba(99,102,241,0.15);}'+
+          '.home-v2-timeline-dot.muted{background:#e2e8f0;}'+
+          '.home-v2-timeline-line{flex:1;width:3px;background:rgba(99,102,241,0.2);border-radius:999px;margin-top:6px;}'+
+          '.home-v2-timeline-content{flex:1;}'+
+          '.home-v2-timeline-date{display:inline-flex;align-items:center;gap:8px;background:#eef2ff;border-radius:12px;padding:6px 10px;margin-bottom:10px;}'+
+          '.home-v2-timeline-day{font-weight:700;color:#4f46e5;font-size:12px;}'+
+          '.home-v2-timeline-date-text{font-size:12px;color:#94a3b8;font-weight:600;}'+
+          '.home-v2-delivery-card{background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:14px 16px;box-shadow:0 8px 16px rgba(15,23,42,0.05);cursor:pointer;margin-bottom:10px;}'+
+          '.home-v2-delivery-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;}'+
+          '.home-v2-delivery-dot{width:8px;height:8px;border-radius:50%;background:#fb923c;}'+
+          '.home-v2-delivery-org{font-weight:700;color:#0f172a;flex:1;}'+
+          '.home-v2-delivery-qty{font-size:12px;font-weight:700;color:#64748b;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:4px 8px;}'+
+          '.home-v2-delivery-item{font-weight:700;color:#4f46e5;margin-bottom:10px;}'+
+          '.home-v2-delivery-footer{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;border-top:1px solid #f1f5f9;padding-top:8px;}'+
+          '.home-v2-files-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:12px;}'+
+          '.home-v2-search input{width:100%;padding:10px 14px;border-radius:14px;border:1px solid #e2e8f0;background:#fff;font-weight:600;font-size:13px;color:#334155;outline:none;}'+
+          '.home-v2-files{display:flex;flex-direction:column;gap:10px;overflow:auto;max-height:240px;padding-right:4px;}'+
+          '.home-v2-file-row{display:flex;align-items:center;gap:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:10px 12px;cursor:pointer;}'+
+          '.home-v2-file-icon{width:36px;height:36px;border-radius:12px;background:#fff;border:1px solid #e2e8f0;display:flex;align-items:center;justify-content:center;color:#64748b;font-weight:700;}'+
+          '.home-v2-file-name{font-weight:700;color:#1f2937;font-size:14px;}'+
+          '.home-v2-file-meta{display:flex;align-items:center;gap:8px;margin-top:4px;font-size:11px;color:#94a3b8;font-weight:700;}'+
+          '.home-v2-file-meta span{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:2px 6px;color:#64748b;}'+
+          '.home-v2-more{margin-top:10px;text-align:center;color:#94a3b8;font-weight:700;font-size:12px;}'+
+          '.home-v2-empty{color:#94a3b8;font-weight:600;font-size:13px;padding:6px 0;}'+
+          '.home-drive-list.home-drop-hover{outline:2px dashed #6366f1;outline-offset:6px;background:#f8fafc;}'+
+          '.home-drive-menu{position:absolute;z-index:9999;background:#fff;border:1px solid #e2e8f0;box-shadow:0 18px 40px rgba(15,23,42,0.16);border-radius:14px;min-width:160px;overflow:hidden;}'+
+          '.home-drive-menu button{display:block;width:100%;padding:10px 12px;background:none;border:none;text-align:left;cursor:pointer;font-weight:600;}'+
+          '.home-drive-menu button:hover{background:#f1f5f9;}'+
+        '</style>';
+
+      setDataAreaContent(html);
+
+      bindDriveInteractions();
+      bindDriveDropzone();
+      bindStockInteractions();
+      renderDriveSection();
+
+      var fromEl = document.getElementById('homeFrom');
+      var toEl = document.getElementById('homeTo');
+      if (fromEl) fromEl.value = formatDateRu(currentPeriod.from);
+      if (toEl) toEl.value = formatDateRu(currentPeriod.to);
+      if (typeof attachDateInput === 'function') {
+        attachDateInput('homeFrom');
+        attachDateInput('homeTo');
+      }
+    }
+
+    function escapeHtml(str) {
+      if (str == null) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function escapeAttr(str) {
+      return escapeHtml(str).replace(/\n/g, ' ');
+    }
+
+    function normalizeRuDayName(s) {
+      s = (s == null) ? '' : String(s);
+      s = s.trim();
+      if (!s) return '';
+      // делаем: "Понедельник", "Вторник" и т.д.
+      var lower = s.toLowerCase();
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    }
+
+    function formatDateRu(dateVal) {
+      if (!dateVal) return '';
+      if (dateVal instanceof Date) {
+        var y = dateVal.getFullYear();
+        var m = ('0' + (dateVal.getMonth() + 1)).slice(-2);
+        var d = ('0' + dateVal.getDate()).slice(-2);
+        return d + '.' + m + '.' + y;
+      }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) {
+        var p = dateVal.split('-');
+        return p[2] + '.' + p[1] + '.' + p[0];
+      }
+      return dateVal;
+    }
+
+    function formatDateTimeRu(dateVal) {
+      var d = parseIsoDate(dateVal);
+      if (!d) return '';
+      var y = d.getFullYear();
+      var m = ('0' + (d.getMonth() + 1)).slice(-2);
+      var da = ('0' + d.getDate()).slice(-2);
+      var hh = ('0' + d.getHours()).slice(-2);
+      var mm = ('0' + d.getMinutes()).slice(-2);
+      return da + '.' + m + '.' + y + ' ' + hh + ':' + mm;
+    }
+
+    function formatShortDate(dateVal) {
+      var d = parseIsoDate(dateVal);
+      if (!d) return '';
+      var da = ('0' + d.getDate()).slice(-2);
+      var m = ('0' + (d.getMonth() + 1)).slice(-2);
+      return da + '.' + m;
+    }
+
+    function formatShortTime(dateVal) {
+      var d = parseIsoDate(dateVal);
+      if (!d) return '';
+      var hh = ('0' + d.getHours()).slice(-2);
+      var mm = ('0' + d.getMinutes()).slice(-2);
+      return hh + ':' + mm;
+    }
+
+    function parseRuDateToIso(str) {
+      if (!str) return '';
+      str = str.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+      var m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(str);
+      if (m) return m[3] + '-' + m[2] + '-' + m[1];
+      var d = str.replace(/\D/g, '');
+      if (d.length === 8) return d.slice(4) + '-' + d.slice(2, 4) + '-' + d.slice(0, 2);
+      return '';
+    }
+
+    function parseIsoDate(str) {
+      if (!str) return null;
+      if (str instanceof Date && !isNaN(str)) return str;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return new Date(str + 'T00:00:00');
+      var d = new Date(str);
+      return isNaN(d) ? null : d;
+    }
+
+    function getDayParts(dateIso) {
+      var d = parseIsoDate(dateIso);
+      if (!d) return { dayName: '', dateStr: '' };
+      var days = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
+      return { dayName: normalizeRuDayName(days[d.getDay()]), dateStr: formatDateRu(dateIso) };
+    }
+
+    function getFilteredDriveFiles() {
+      var files = (driveData && driveData.files) || [];
+      var term = (driveFilter || '').toLowerCase();
+      if (!term) return files;
+      return files.filter(function (f) {
+        return (f.name || '').toLowerCase().indexOf(term) !== -1;
+      });
+    }
+
+    function buildDriveListHtml() {
+      var files = getFilteredDriveFiles();
+      if (!files.length) return '<div class="home-v2-empty">Нет файлов в папке контрактов.</div>';
+      return files.map(function (f) {
+        var dateStr = formatShortDate(f.updated || f.created);
+        var timeStr = formatShortTime(f.updated || f.created);
+        return '' +
+          '<div class="home-v2-file-row home-drive-row" data-id="' + escapeAttr(f.id || '') + '" data-url="' + escapeAttr(f.url || '') + '" data-name="' + escapeAttr(f.name || '') + '">' +
+            '<div class="home-v2-file-icon">📄</div>' +
+            '<div class="home-v2-file-body">' +
+              '<div class="home-v2-file-name">' + escapeHtml(f.name || '') + '</div>' +
+              '<div class="home-v2-file-meta">' +
+                '<span>' + escapeHtml(dateStr) + '</span>' +
+                '<span>' + escapeHtml(timeStr) + '</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+      }).join('');
+    }
+
+    function renderDriveSection() {
+      var listEl = document.getElementById('homeDriveList');
+      if (listEl) listEl.innerHTML = buildDriveListHtml();
+      var searchEl = document.getElementById('homeDriveSearch');
+      if (searchEl && searchEl.value !== driveFilter) {
+        searchEl.value = driveFilter;
+      }
+    }
+
+    function bindStockInteractions() {
+      var list = document.querySelector('.home-stock-list');
+      if (!list || list.dataset.stockBound) return;
+      list.dataset.stockBound = '1';
+      list.addEventListener('click', function (evt) {
+        var row = evt.target.closest('.home-stock-row');
+        if (!row) return;
+        highlightStockRow(row);
+      });
+      list.addEventListener('dblclick', function (evt) {
+        var row = evt.target.closest('.home-stock-row');
+        if (!row) return;
+        highlightStockRow(row);
+        openStockItem(row.dataset.item || '');
+      });
+      list.addEventListener('contextmenu', function (evt) {
+        var row = evt.target.closest('.home-stock-row');
+        if (!row) return;
+        evt.preventDefault();
+        highlightStockRow(row);
+        showStockContextMenu(evt.pageX, evt.pageY, row.dataset.item || '');
+      });
+    }
+
+    function ensureStockMenu() {
+      if (stockMenuEl) return;
+      stockMenuEl = document.createElement('div');
+      stockMenuEl.id = 'homeStockMenu';
+      stockMenuEl.style.position = 'fixed';
+      stockMenuEl.style.background = '#fff';
+      stockMenuEl.style.border = '1px solid var(--divider-color)';
+      stockMenuEl.style.boxShadow = 'var(--shadow-elevation-4)';
+      stockMenuEl.style.borderRadius = '8px';
+      stockMenuEl.style.padding = '8px 0';
+      stockMenuEl.style.minWidth = '220px';
+      stockMenuEl.style.zIndex = '99999';
+      stockMenuEl.style.display = 'none';
+      stockMenuEl.innerHTML = '<button id="homeStockOpenMoves" style="width:100%;padding:10px 14px;background:none;border:none;text-align:left;cursor:pointer;font-weight:600;">Посмотреть движения товара</button>';
+      document.body.appendChild(stockMenuEl);
+
+      var btn = document.getElementById('homeStockOpenMoves');
+      if (btn) {
+        btn.addEventListener('click', function () {
+          var item = stockMenuEl.dataset.item || '';
+          hideStockContextMenu();
+          openStockItem(item);
+        });
+      }
+
+      document.addEventListener('mousedown', function (e) {
+        if (!stockMenuEl || stockMenuEl.style.display === 'none') return;
+        if (!stockMenuEl.contains(e.target)) hideStockContextMenu();
+      });
+      document.addEventListener('scroll', hideStockContextMenu, true);
+    }
+
+    function showStockContextMenu(x, y, item) {
+      ensureStockMenu();
+      if (!stockMenuEl) return;
+      stockMenuEl.dataset.item = item || '';
+      stockMenuEl.style.left = x + 'px';
+      stockMenuEl.style.top = y + 'px';
+      stockMenuEl.style.display = 'block';
+    }
+
+    function hideStockContextMenu() {
+      if (stockMenuEl) stockMenuEl.style.display = 'none';
+    }
+
+    function highlightStockRow(row) {
+      selectedStockItem = row ? (row.dataset.item || '') : '';
+      var rows = document.querySelectorAll('.home-stock-row');
+      Array.prototype.forEach.call(rows, function (el) {
+        el.classList.toggle('active', el === row);
+      });
+    }
+
+    function openStockItem(name) {
+      if (!name) return;
+      if (typeof openModuleTab === 'function') {
+        window.pendingWarehouseItem = name;
+        openModuleTab('warehouse');
+        setTimeout(function () {
+          if (window.UIWarehouse && typeof UIWarehouse.showMovesForItem === 'function') {
+            UIWarehouse.showMovesForItem(name);
+            window.pendingWarehouseItem = '';
+          }
+        }, 200);
+      }
+    }
+
+    function groupPlans(plans) {
+      if (!plans || !plans.length) return [];
+      var map = {};
+      plans.forEach(function (p) {
+        if (!p.date) return;
+        if (!map[p.date]) map[p.date] = [];
+        map[p.date].push(p);
+      });
+
+      var dates = Object.keys(map).sort();
+      return dates.map(function (dt) {
+        var parts = getDayParts(dt);
+        return {
+          date: dt,
+          dayName: parts.dayName,
+          dateStr: parts.dateStr,
+          items: map[dt]
+        };
+      });
+    }
+
+    function onPeriodChange() {
+      var fromIso = parseRuDateToIso(document.getElementById('homeFrom').value);
+      var toIso = parseRuDateToIso(document.getElementById('homeTo').value);
+      currentPeriod.from = fromIso || '';
+      currentPeriod.to = toIso || '';
+      fetchData();
+    }
+
+    function openContracts() { if (typeof openModuleTab === 'function') openModuleTab('contracts'); }
+    function createContract() {
+      if (typeof openModuleTab === 'function') {
+        openModuleTab('contracts');
+        setTimeout(function () {
+          if (window.UIContracts && typeof UIContracts.create === 'function') UIContracts.create();
+        }, 200);
+      }
+    }
+    function openWarehouse() { if (typeof openModuleTab === 'function') openModuleTab('warehouse'); }
+    function openCommercials() { if (typeof openModuleTab === 'function') openModuleTab('commercials'); }
+
+    function openPlanContract(evt, id) {
+      if (evt) evt.preventDefault();
+      if (!id) return;
+      if (typeof openModuleTab === 'function') {
+        openModuleTab('contracts');
+        setTimeout(function () {
+          if (window.UIContracts && typeof UIContracts.edit === 'function') UIContracts.edit(id);
+        }, 220);
+      }
+    }
+
+    function refreshDrive() {
+      var guard = window.createTabGuard ? window.createTabGuard('home') : null;
+      var listEl = document.getElementById('homeDriveList');
+      if (listEl) listEl.innerHTML = '<div class="panel-loading"><div class="spinner"></div><div>Обновляем файлы...</div></div>';
+      driveFilter = '';
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (res && res.success) {
+            driveData = res.data || { files: [] };
+            if (guard && guard.isActive()) {
+              renderDriveSection();
+            }
+          } else {
+            if (guard && guard.isActive()) {
+              AppDialog.alert('Не удалось обновить список файлов.', 'Файлы контрактов');
+            }
+          }
+        })
+        .withFailureHandler(function (err) {
+          if (guard && guard.isActive()) {
+            AppDialog.alert('Ошибка обновления: ' + err, 'Файлы контрактов');
+          }
+        })
+        .appBackend({ module: 'dashboard', action: 'driveList', payload: buildStoragePayload({}) });
+    }
+
+    function buildStoragePayload(base) {
+      var payload = base || {};
+      payload.userId = getStorageUserId();
+      return payload;
+    }
+
+    function openDriveFile(url) { hideDriveMenu(); if (url) window.open(url, '_blank'); }
+
+    function bindDriveInteractions() {
+      var listEl = document.getElementById('homeDriveList');
+      if (listEl && !listEl.dataset.driveBound) {
+        listEl.dataset.driveBound = '1';
+        listEl.addEventListener('click', function (evt) {
+          var row = evt.target.closest('.home-drive-row');
+          if (!row) return;
+          openDriveFile(row.dataset.url);
+        });
+        listEl.addEventListener('contextmenu', function (evt) {
+          var row = evt.target.closest('.home-drive-row');
+          if (!row) return;
+          evt.preventDefault();
+          showDriveMenu(evt.pageX, evt.pageY, row.dataset.id, row.dataset.name);
+        });
+      }
+
+      var searchEl = document.getElementById('homeDriveSearch');
+      if (searchEl && !searchEl.dataset.driveBound) {
+        searchEl.dataset.driveBound = '1';
+        searchEl.addEventListener('input', function (e) {
+          driveFilter = e.target.value || '';
+          renderDriveSection();
+        });
+      }
+
+      if (!document.body.dataset.driveMenuGuard) {
+        document.body.dataset.driveMenuGuard = '1';
+        document.addEventListener('click', hideDriveMenu);
+        window.addEventListener('scroll', hideDriveMenu, true);
+      }
+    }
+
+    function showDriveMenu(x, y, fileId, fileName) {
+      hideDriveMenu();
+      if (!fileId) return;
+      var menu = document.createElement('div');
+      menu.className = 'home-drive-menu';
+      var btn = document.createElement('button');
+      btn.textContent = 'Удалить';
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        hideDriveMenu();
+        confirmDeleteDriveFile(fileId, fileName);
+      };
+      menu.appendChild(btn);
+      menu.style.left = x + 'px';
+      menu.style.top = y + 'px';
+      document.body.appendChild(menu);
+      driveMenuEl = menu;
+    }
+
+    function hideDriveMenu() {
+      if (driveMenuEl && driveMenuEl.parentNode) {
+        driveMenuEl.parentNode.removeChild(driveMenuEl);
+      }
+      driveMenuEl = null;
+    }
+
+    function confirmDeleteDriveFile(fileId, fileName) {
+      if (!fileId) return;
+      var msg = 'Удалить контракт ' + (fileName ? '"' + fileName + '"' : '') + '?';
+      AppDialog.confirm(msg, function () { deleteDriveFile(fileId); }, null, 'Удаление файла');
+    }
+
+    function deleteDriveFile(fileId) {
+      var guard = window.createTabGuard ? window.createTabGuard('home') : null;
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (res && res.success) {
+            driveData = res.data || { files: [] };
+            if (guard && guard.isActive()) {
+              renderDriveSection();
+            }
+          } else {
+            if (guard && guard.isActive()) {
+              AppDialog.alert('Не удалось удалить файл.', 'Удаление файла');
+            }
+          }
+        })
+        .withFailureHandler(function (err) {
+          if (guard && guard.isActive()) {
+            AppDialog.alert('Ошибка удаления: ' + err, 'Удаление файла');
+          }
+        })
+        .appBackend({ module: 'dashboard', action: 'deleteDriveFile', payload: buildStoragePayload({ id: fileId }) });
+    }
+
+    function showDriveImportProgress() {
+      var listEl = document.getElementById('homeDriveList');
+      if (listEl) listEl.innerHTML = '<div class="panel-loading"><div class="spinner"></div><div>Идет проверка новых контрактов...</div></div>';
+    }
+
+    function buildImportMessage(res) {
+      if (!res) return 'Не удалось выполнить проверку.';
+      if (res.skipped) return 'Проверка уже выполняется. Попробуйте позже.';
+      if (res.message) return res.message;
+      var added = Array.isArray(res.added) ? res.added : [];
+      if (!added.length) return 'Новых контрактов нет!';
+      var titles = added.map(function (a) {
+        var t = (a && a.title) ? String(a.title) : 'контракт';
+        var norm = t.toLowerCase();
+        if (norm.indexOf('контракт') === 0 || norm.indexOf('договор') === 0) return t;
+        return 'контракт ' + t;
+      });
+      return 'Добавлены ' + titles.join(', ') + '.';
+    }
+
+    function runContractsImport() {
+      if (driveImportInFlight) return;
+      driveImportInFlight = true;
+      showDriveImportProgress();
+      var guard = window.createTabGuard ? window.createTabGuard('home') : null;
+
+      google.script.run
+        .withSuccessHandler(function (res) {
+          driveImportInFlight = false;
+          if (!res || !res.success) {
+            if (guard && guard.isActive()) {
+              AppDialog.alert('Не удалось проверить новые контракты.', 'Файлы контрактов');
+              renderDriveSection();
+            }
+            return;
+          }
+          var message = buildImportMessage(res.data || {});
+          if (guard && guard.isActive()) {
+            AppDialog.alert(message, 'Файлы контрактов');
+            refreshDrive();
+          }
+        })
+        .withFailureHandler(function (err) {
+          driveImportInFlight = false;
+          if (guard && guard.isActive()) {
+            AppDialog.alert('Ошибка: ' + (err || 'неизвестная ошибка'), 'Файлы контрактов');
+            renderDriveSection();
+          }
+        })
+        .appBackend({ module: 'dashboard', action: 'processContracts', payload: buildStoragePayload({}) });
+    }
+
+    function bindDriveDropzone() {
+      var area = document.getElementById('homeDriveList');
+      if (!area || area.dataset.dropBound) return;
+      area.dataset.dropBound = '1';
+
+      var handleDropFile = function (file) {
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function (e) {
+          var base64 = (e.target.result || '').split(',')[1];
+          google.script.run
+            .withSuccessHandler(function (res) {
+              if (!res || !res.success) {
+                AppDialog.alert('Не удалось загрузить файл: ' + (res && res.error ? res.error : 'ошибка'), 'Загрузка файла');
+                renderDriveSection();
+                return;
+              }
+              refreshDrive();
+            })
+            .withFailureHandler(function (err) {
+              AppDialog.alert('Ошибка загрузки: ' + err, 'Загрузка файла');
+              renderDriveSection();
+            })
+            .appBackend({
+              module: 'dashboard',
+              action: 'uploadDriveFile',
+              payload: buildStoragePayload({
+                name: file.name,
+                mimeType: file.type || 'application/octet-stream',
+                content: base64
+              })
+            });
+        };
+        reader.readAsDataURL(file);
+      };
+
+      var addHover = function () { area.classList.add('home-drop-hover'); };
+      var removeHover = function () { area.classList.remove('home-drop-hover'); };
+
+      area.addEventListener('dragover', function (e) { e.preventDefault(); addHover(); });
+      area.addEventListener('dragleave', function () { removeHover(); });
+      area.addEventListener('drop', function (e) {
+        e.preventDefault();
+        removeHover();
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+          handleDropFile(e.dataTransfer.files[0]);
+        }
+      });
+    }
+
+    function showUploadModal() {
+      var existing = document.getElementById('homeUploadModal');
+      if (!existing) {
+        var modal = document.createElement('div');
+        modal.id = 'homeUploadModal';
+        modal.className = 'home-upload-overlay';
+        modal.innerHTML = '' +
+          '<div class="home-upload-window">' +
+            '<div class="home-upload-header">Загрузка контракта</div>' +
+            '<div class="home-upload-body">' +
+              '<div id="homeDropzone" class="home-dropzone">Перетащите файл сюда или нажмите для выбора</div>' +
+              '<input id="homeFileInput" type="file" style="display:none;" />' +
+              '<div class="home-upload-hint">Файл будет сохранён во внутреннем хранилище. Вы сможете открыть его прямо из списка файлов.</div>' +
+            '</div>' +
+            '<div class="home-upload-actions">' +
+              '<button class="toolbar-button" onclick="UIHome.hideUploadModal()">Отмена</button>' +
+            '</div>' +
+          '</div>';
+        document.body.appendChild(modal);
+
+        var dropzone = document.getElementById('homeDropzone');
+        var input = document.getElementById('homeFileInput');
+        dropzone.addEventListener('click', function () { input.click(); });
+        dropzone.addEventListener('dragover', function (e) { e.preventDefault(); dropzone.classList.add('dragover'); });
+        dropzone.addEventListener('dragleave', function () { dropzone.classList.remove('dragover'); });
+        dropzone.addEventListener('drop', function (e) {
+          e.preventDefault();
+          dropzone.classList.remove('dragover');
+          if (e.dataTransfer.files && e.dataTransfer.files.length) {
+            handleFileUpload(e.dataTransfer.files[0]);
+          }
+        });
+        input.addEventListener('change', function (e) {
+          if (e.target.files && e.target.files.length) {
+            handleFileUpload(e.target.files[0]);
+          }
+        });
+      }
+      var dropzoneEl = document.getElementById('homeDropzone');
+      if (dropzoneEl) {
+        dropzoneEl.textContent = 'Перетащите файл сюда или нажмите для выбора';
+        dropzoneEl.classList.remove('uploading');
+      }
+      document.getElementById('homeUploadModal').style.display = 'flex';
+    }
+
+    function hideUploadModal() {
+      var modal = document.getElementById('homeUploadModal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    function handleFileUpload(file) {
+      if (!file) return;
+      var dropzone = document.getElementById('homeDropzone');
+      if (dropzone) {
+        dropzone.textContent = 'Загружаем ' + file.name + '...';
+        dropzone.classList.add('uploading');
+      }
+      var guard = window.createTabGuard ? window.createTabGuard('home') : null;
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        var base64 = (e.target.result || '').split(',')[1];
+        google.script.run
+          .withSuccessHandler(function (res) {
+            if (guard && guard.isActive()) {
+              hideUploadModal();
+            }
+            if (!res || !res.success) {
+              if (guard && guard.isActive()) {
+                AppDialog.alert('Не удалось загрузить файл: ' + (res && res.error ? res.error : 'ошибка'), 'Загрузка файла');
+              }
+              return;
+            }
+            if (guard && guard.isActive()) {
+              refreshDrive();
+              AppDialog.alert('Файл сохранён во внутреннем хранилище.', 'Загрузка файла');
+            }
+          })
+          .withFailureHandler(function (err) {
+            if (guard && guard.isActive()) {
+              hideUploadModal();
+              AppDialog.alert('Ошибка загрузки: ' + err, 'Загрузка файла');
+            }
+          })
+          .appBackend({
+            module: 'dashboard',
+            action: 'uploadDriveFile',
+            payload: buildStoragePayload({
+              name: file.name,
+              mimeType: file.type || 'application/octet-stream',
+              content: base64
+            })
+          });
+      };
+      reader.readAsDataURL(file);
+    }
+
+    return {
+      load: load,
+      onResume: function () { if (lastData) render(); },
+      onPeriodChange: onPeriodChange,
+      openContracts: openContracts,
+      createContract: createContract,
+      openWarehouse: openWarehouse,
+      openPlanContract: openPlanContract,
+      showUploadModal: showUploadModal,
+      hideUploadModal: hideUploadModal,
+      openDriveFile: openDriveFile,
+      runContractsImport: runContractsImport,
+      refreshDrive: refreshDrive,
+      openCommercials: openCommercials,
+      reload: fetchData
+    };
+  })();
+</script>

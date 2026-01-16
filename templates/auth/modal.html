@@ -1,0 +1,660 @@
+<div class="auth-modal-v2" id="authModal" aria-hidden="true">
+  <div class="auth-modal-v2__overlay" data-auth-close></div>
+  <div class="auth-modal-v2__content">
+    <button class="auth-modal-v2__close" data-auth-close aria-label="Закрыть">&times;</button>
+    
+    <div class="auth-track-v2" id="authTrack">
+      <!-- Вход (Login) -->
+      <div class="auth-view" id="authViewLogin">
+        <div class="auth-modal-v2__logo">П</div>
+        <h2>С возвращением</h2>
+        <p class="auth-subtitle">Введите данные для входа в систему</p>
+
+        <div class="auth-accounts-v2" id="authAccounts" style="display: none;">
+          <div class="auth-accounts-title">Аккаунты на этом устройстве</div>
+          <div class="auth-accounts-list" id="authAccountsList"></div>
+        </div>
+
+        <form class="auth-form-v2" id="loginForm">
+          <div class="auth-field">
+            <label for="loginEmail">ЛОГИН</label>
+            <div class="auth-input-wrapper">
+              <span class="auth-input-icon">📧</span>
+              <input type="email" id="loginEmail" name="email" placeholder="user@prostavki.com" required>
+            </div>
+          </div>
+          
+          <div class="auth-field">
+            <label for="loginPassword">ПАРОЛЬ</label>
+            <div class="auth-input-wrapper">
+              <span class="auth-input-icon">🔒</span>
+              <input type="password" id="loginPassword" name="password" placeholder="********" required>
+            </div>
+          </div>
+          
+          <div class="auth-links">
+            <a href="#" class="auth-link-forgot" id="toForgot">Забыли пароль?</a>
+          </div>
+          
+          <div class="auth-error-v2" id="loginError" role="alert"></div>
+
+          <button type="submit" class="auth-submit-v2" id="submitLogin">Войти в систему</button>
+          
+          <div class="auth-divider-v2">
+            <span>или</span>
+          </div>
+          
+          <button type="button" class="auth-telegram-v2">
+            <div class="tg-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px;">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </div>
+            Войти через Telegram
+          </button>
+          
+          <div class="auth-footer-v2">
+            Нет аккаунта? <a href="#" class="auth-link-register" id="toRegister">Зарегистрироваться</a>
+          </div>
+        </form>
+      </div>
+
+      <!-- Регистрация (Register) -->
+      <div class="auth-view" id="authViewRegister" style="display: none;">
+        <div class="auth-modal-v2__logo">П</div>
+        <h2>Создать аккаунт</h2>
+        <p class="auth-subtitle">Выберите удобный способ регистрации</p>
+        
+        <div class="auth-options-v2">
+          <button type="button" class="auth-btn-email-v2">
+            <span class="btn-icon-v2">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 18px; height: 18px;">
+                <path d="M4 4h16c1.1 0 2 0.9 2 2v12c0 1.1-0.9 2-2 2H4c-1.1 0-2-0.9-2-2V6c0-1.1 0.9-2 2-2z"></path>
+                <polyline points="22,6 12,13 2,6"></polyline>
+              </svg>
+            </span>
+            Регистрация по Email
+          </button>
+          
+          <button type="button" class="auth-btn-telegram-v2">
+            <div class="tg-icon-white">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 16px; height: 16px;">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </div>
+            Через Telegram
+          </button>
+        </div>
+        
+        <div class="auth-footer-v2">
+          Уже есть аккаунт? <a href="#" class="auth-link-login" id="toLogin">Войти</a>
+        </div>
+      </div>
+
+      <!-- Проверка безопасности (Verification) -->
+      <div class="auth-view" id="authViewRegisterEmail" style="display: none;">
+        <button type="button" class="auth-back-v2" id="backToRegister" aria-label="Назад">←</button>
+        <div class="auth-modal-v2__logo">П</div>
+        <h2>Создать аккаунт</h2>
+        <p class="auth-subtitle">Заполните данные для создания аккаунта</p>
+
+        <form class="auth-form-v2" id="registerEmailForm">
+          <div class="auth-field">
+            <label for="registerEmail">ЛОГИН (EMAIL)</label>
+            <div class="auth-input-wrapper">
+              <span class="auth-input-icon">📧</span>
+              <input type="email" id="registerEmail" name="email" placeholder="user@prostavki.com" required>
+            </div>
+          </div>
+
+          <div class="auth-field">
+            <label for="registerPassword">ПАРОЛЬ</label>
+            <div class="auth-input-wrapper">
+              <span class="auth-input-icon">🔒</span>
+              <input type="password" id="registerPassword" name="password" placeholder="********" required>
+            </div>
+          </div>
+
+          <button type="submit" class="auth-submit-v2" id="submitRegisterEmail">Продолжить</button>
+
+          <div class="auth-error-v2" id="registerError" role="alert"></div>
+
+          <div class="auth-footer-v2">
+            Уже есть аккаунт? <a href="#" class="auth-link-login" id="toLoginFromRegisterEmail">Войти</a>
+          </div>
+        </form>
+      </div>
+
+      <div class="auth-view" id="authViewForgot" style="display: none;">
+        <button type="button" class="auth-back-v2" id="backToLoginFromForgot" aria-label="Назад"></button>
+        <div class="auth-modal-v2__logo">П</div>
+        <h2>Восстановление пароля</h2>
+        <p class="auth-subtitle">Введите email, чтобы получить код</p>
+
+        <form class="auth-form-v2" id="forgotForm">
+          <div class="auth-field">
+            <label for="forgotEmail">ЛОГИН (EMAIL)</label>
+            <div class="auth-input-wrapper">
+              <span class="auth-input-icon">??</span>
+              <input type="email" id="forgotEmail" name="email" placeholder="user@prostavki.com" required>
+            </div>
+          </div>
+
+          <button type="submit" class="auth-submit-v2" id="submitForgot">Отправить код</button>
+
+          <div class="auth-error-v2" id="forgotError" role="alert"></div>
+        </form>
+      </div>
+
+      <div class="auth-view" id="authViewResetVerify" style="display: none;">
+        <button type="button" class="auth-back-v2" id="backToForgot" aria-label="Назад"></button>
+        <div class="otp-hero-v2">
+          <div class="otp-pulse"></div>
+          <div class="otp-icon-v2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 24px; height: 24px;">
+              <path d="M4 4h16c1.1 0 2 0.9 2 2v12c0 1.1-0.9 2-2 2H4c-1.1 0-2-0.9-2-2V6c0-1.1 0.9-2 2-2z"></path>
+              <polyline points="22,6 12,13 2,6"></polyline>
+            </svg>
+            <div class="otp-success-badge">?</div>
+          </div>
+        </div>
+        <h2 class="verify-title">Проверка кода</h2>
+        <p class="auth-subtitle">Мы отправили 6-значный код на <br><span id="resetDisplayEmail" style="color: white; font-weight: 700;">user@prostavki.com</span></p>
+
+        <div class="otp-inputs-v2" id="resetOtpInputs">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2 reset-otp-field" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2 reset-otp-field" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2 reset-otp-field" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2 reset-otp-field" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2 reset-otp-field" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2 reset-otp-field" placeholder=" ">
+        </div>
+
+        <div class="auth-error-v2" id="resetOtpError" role="alert"></div>
+
+        <button type="button" class="auth-submit-v2" style="margin-top: 1.5rem;" id="submitResetOtp">Подтвердить код</button>
+
+        <div class="otp-timer-v2">
+          <span class="timer-icon">??</span> Отправить повторно через <span id="resetTimerCount">00:59</span>
+        </div>
+      </div>
+
+      <div class="auth-view" id="authViewResetPassword" style="display: none;">
+        <button type="button" class="auth-back-v2" id="backToResetVerify" aria-label="Назад"></button>
+        <div class="auth-modal-v2__logo">П</div>
+        <h2>Новый пароль</h2>
+        <p class="auth-subtitle">Введите новый пароль дважды</p>
+
+        <form class="auth-form-v2" id="resetPasswordForm">
+          <div class="auth-field">
+            <label for="resetPassword">НОВЫЙ ПАРОЛЬ</label>
+            <div class="auth-input-wrapper">
+              <span class="auth-input-icon">??</span>
+              <input type="password" id="resetPassword" name="password" placeholder="********" required>
+            </div>
+          </div>
+
+          <div class="auth-field">
+            <label for="resetPasswordConfirm">ПОВТОРИТЕ ПАРОЛЬ</label>
+            <div class="auth-input-wrapper">
+              <span class="auth-input-icon">??</span>
+              <input type="password" id="resetPasswordConfirm" name="confirm" placeholder="********" required>
+            </div>
+          </div>
+
+          <button type="submit" class="auth-submit-v2" id="submitResetPassword">Сохранить пароль</button>
+
+          <div class="auth-error-v2" id="resetPasswordError" role="alert"></div>
+        </form>
+      </div>
+
+      <div class="auth-view" id="authViewVerification" style="display: none;">
+        <div class="otp-hero-v2">
+          <div class="otp-pulse"></div>
+          <div class="otp-icon-v2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 24px; height: 24px;">
+              <path d="M4 4h16c1.1 0 2 0.9 2 2v12c0 1.1-0.9 2-2 2H4c-1.1 0-2-0.9-2-2V6c0-1.1 0.9-2 2-2z"></path>
+              <polyline points="22,6 12,13 2,6"></polyline>
+            </svg>
+            <div class="otp-success-badge">✓</div>
+          </div>
+        </div>
+        
+        <h2 class="verify-title">Проверка безопасности</h2>
+        <p class="auth-subtitle">Мы отправили 6-значный код подтверждения на <br><span id="displayEmail" style="color: white; font-weight: 700;">user@prostavki.com</span></p>
+        
+        <div class="otp-inputs-v2">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2" placeholder=" ">
+          <input type="text" maxlength="1" inputmode="numeric" class="otp-field-v2" placeholder=" ">
+        </div>
+        
+        <div class="auth-error-v2" id="otpError" role="alert"></div>
+
+        <button type="button" class="auth-submit-v2" style="margin-top: 1.5rem;" id="submitOtp">Подтвердить вход</button>
+        
+        <div class="otp-timer-v2">
+          <span class="timer-icon">🕒</span> Отправить повторно через <span id="timerCount">00:59</span>
+        </div>
+        
+        <button type="button" class="btn-back-v2" id="backToLogin">
+          <span>←</span> Вернуться назад
+        </button>
+      </div>
+    </div>
+    <div class="auth-confirm" id="authConfirm" aria-hidden="true">
+      <div class="auth-confirm__card" role="dialog" aria-modal="true" aria-labelledby="authConfirmTitle">
+        <div class="auth-confirm__title" id="authConfirmTitle">Удалить с устройства?</div>
+        <div class="auth-confirm__text" id="authConfirmMessage"></div>
+        <div class="auth-confirm__actions">
+          <button type="button" class="auth-confirm__btn auth-confirm__btn--ghost" id="authConfirmNo">Нет</button>
+          <button type="button" class="auth-confirm__btn" id="authConfirmYes">Удалить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const modal = document.getElementById('authModal');
+    const triggers = document.querySelectorAll('[data-auth-trigger]');
+    const closeBtns = document.querySelectorAll('[data-auth-close]');
+    const views = {
+      login: document.getElementById('authViewLogin'),
+      register: document.getElementById('authViewRegister'),
+      registerEmail: document.getElementById('authViewRegisterEmail'),
+      verify: document.getElementById('authViewVerification'),
+      forgot: document.getElementById('authViewForgot'),
+      resetVerify: document.getElementById('authViewResetVerify'),
+      resetPassword: document.getElementById('authViewResetPassword')
+    };
+    const loginForm = document.getElementById('loginForm');
+    const registerEmailForm = document.getElementById('registerEmailForm');
+    const forgotForm = document.getElementById('forgotForm');
+    const resetPasswordForm = document.getElementById('resetPasswordForm');
+    const displayEmail = document.getElementById('displayEmail');
+    const resetDisplayEmail = document.getElementById('resetDisplayEmail');
+    const timerCount = document.getElementById('timerCount');
+    const resetTimerCount = document.getElementById('resetTimerCount');
+    const otpInputs = document.querySelectorAll('#authViewVerification .otp-field-v2');
+    const resetOtpInputs = document.querySelectorAll('#authViewResetVerify .otp-field-v2');
+    const loginError = document.getElementById('loginError');
+    const registerError = document.getElementById('registerError');
+    const otpError = document.getElementById('otpError');
+    const forgotError = document.getElementById('forgotError');
+    const resetOtpError = document.getElementById('resetOtpError');
+    const resetPasswordError = document.getElementById('resetPasswordError');
+    const submitOtp = document.getElementById('submitOtp');
+    const submitResetOtp = document.getElementById('submitResetOtp');
+    const authConfirm = document.getElementById('authConfirm');
+    const authConfirmMessage = document.getElementById('authConfirmMessage');
+    const authConfirmYes = document.getElementById('authConfirmYes');
+    const authConfirmNo = document.getElementById('authConfirmNo');
+    
+    let timerInterval;
+    let confirmResolver = null;
+
+    const setError = (el, message) => {
+      if (!el) return;
+      el.textContent = message || '';
+      el.style.display = message ? 'block' : 'none';
+    };
+
+    const clearOtpInputs = (inputs) => {
+      inputs.forEach(input => { input.value = ''; });
+    };
+
+    const requestJson = async (url, payload) => {
+      const body = new URLSearchParams(payload);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json',
+          'X-Requested-With': 'fetch'
+        },
+        body
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || 'Ошибка запроса.');
+      }
+      return data;
+    };
+
+    const showConfirm = (message) => new Promise((resolve) => {
+      if (!authConfirm) {
+        resolve(false);
+        return;
+      }
+      confirmResolver = resolve;
+      authConfirmMessage.textContent = message || '';
+      authConfirm.classList.add('is-open');
+      authConfirm.setAttribute('aria-hidden', 'false');
+    });
+
+    const hideConfirm = (value) => {
+      if (!confirmResolver) return;
+      authConfirm.classList.remove('is-open');
+      authConfirm.setAttribute('aria-hidden', 'true');
+      confirmResolver(value);
+      confirmResolver = null;
+    };
+
+    if (authConfirmYes) authConfirmYes.addEventListener('click', () => hideConfirm(true));
+    if (authConfirmNo) authConfirmNo.addEventListener('click', () => hideConfirm(false));
+    if (authConfirm) {
+      authConfirm.addEventListener('click', (e) => {
+        if (e.target === authConfirm) hideConfirm(false);
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && authConfirm.classList.contains('is-open')) hideConfirm(false);
+      });
+    }
+
+    const authAccountsBox = document.getElementById('authAccounts');
+    const authAccountsList = document.getElementById('authAccountsList');
+
+    const buildInitials = (name) => {
+      const cleaned = (name || '').trim();
+      if (!cleaned) return 'АД';
+      const parts = cleaned.split(/\s+/);
+      if (parts.length >= 2) {
+        return `${(parts[0][0] || '')}${(parts[1][0] || '')}`;
+      }
+      return cleaned.slice(0, 2);
+    };
+
+    const loadAccounts = () => {
+      if (!authAccountsBox || !authAccountsList) return;
+      fetch('/auth/accounts', { headers: { 'Accept': 'application/json' } })
+        .then(res => res.json())
+        .then(data => {
+          const accounts = (data && data.accounts) ? data.accounts : [];
+          authAccountsList.innerHTML = '';
+          if (!accounts.length) {
+            authAccountsBox.style.display = 'none';
+            return;
+          }
+          authAccountsBox.style.display = 'block';
+          accounts.forEach(account => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'auth-account-item';
+            btn.innerHTML = `
+              <span class="auth-account-avatar">${buildInitials(account.name).toUpperCase()}</span>
+              <span class="auth-account-meta">
+                <span class="auth-account-name">${account.name || account.email || 'Аккаунт'}</span>
+                <span class="auth-account-email">${account.email || ''}</span>
+              </span>
+              <span class="auth-account-remove" title="Удалить с устройства" aria-label="Удалить">&times;</span>
+            `;
+            btn.addEventListener('click', () => {
+              fetch(`/auth/switch/${account.id}`, {
+                method: 'POST',
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'fetch' }
+              })
+                .then(res => res.json())
+                .then(payload => {
+                  if (payload && payload.redirect) {
+                    window.location.href = payload.redirect;
+                  }
+                })
+                .catch(() => {});
+            });
+            const removeBtn = btn.querySelector('.auth-account-remove');
+            if (removeBtn) {
+              removeBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const ok = await showConfirm('Аккаунт будет удален с этого устройства.');
+                if (!ok) return;
+                fetch(`/auth/accounts/${account.id}/remove`, {
+                  method: 'POST',
+                  headers: { 'Accept': 'application/json', 'X-Requested-With': 'fetch' }
+                })
+                  .then(() => loadAccounts())
+                  .catch(() => {});
+              });
+            }
+            authAccountsList.appendChild(btn);
+          });
+        })
+        .catch(() => {});
+    };
+
+    const startTimer = (target) => {
+      clearInterval(timerInterval);
+      let seconds = 180;
+      const render = () => {
+        const minutes = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        if (target) {
+          target.textContent = `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+      };
+      render();
+      timerInterval = setInterval(() => {
+        seconds--;
+        render();
+        if (seconds <= 0) clearInterval(timerInterval);
+      }, 1000);
+    };
+
+    const showView = (viewName) => {
+      Object.values(views).forEach(v => {
+        v.style.display = 'none';
+        v.classList.remove('view-enter');
+      });
+      const targetView = views[viewName];
+      targetView.style.display = 'block';
+      setError(loginError, '');
+      setError(registerError, '');
+      setError(otpError, '');
+      setError(forgotError, '');
+      setError(resetOtpError, '');
+      setError(resetPasswordError, '');
+      if (viewName === 'login') {
+        loadAccounts();
+      }
+      
+      if (viewName === 'verify') {
+        targetView.classList.add('view-enter');
+        startTimer(timerCount);
+        clearOtpInputs(otpInputs);
+        if (otpInputs[0]) otpInputs[0].focus();
+      }
+      if (viewName === 'resetVerify') {
+        targetView.classList.add('view-enter');
+        startTimer(resetTimerCount);
+        clearOtpInputs(resetOtpInputs);
+        if (resetOtpInputs[0]) resetOtpInputs[0].focus();
+      }
+    };
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setError(loginError, '');
+      const submitBtn = document.getElementById('submitLogin');
+      submitBtn.style.opacity = '0.7';
+      submitBtn.textContent = 'Отправляем...';
+      try {
+        const email = document.getElementById('loginEmail').value;
+        const password = document.getElementById('loginPassword').value;
+        const data = await requestJson('/auth/login/email', { email, password });
+        if (data && data.redirect) {
+          window.location.href = data.redirect;
+          return;
+        }
+        displayEmail.textContent = data.masked_email || email;
+        showView('verify');
+      } catch (err) {
+        setError(loginError, err.message || 'Ошибка входа.');
+      } finally {
+        submitBtn.style.opacity = '1';
+        submitBtn.textContent = 'Войти в систему';
+      }
+    });
+
+    registerEmailForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setError(registerError, '');
+      const submitBtn = document.getElementById('submitRegisterEmail');
+      submitBtn.style.opacity = '0.7';
+      submitBtn.textContent = 'Отправляем...';
+      try {
+        const email = document.getElementById('registerEmail').value;
+        const password = document.getElementById('registerPassword').value;
+        const data = await requestJson('/auth/register/email', { email, password });
+        displayEmail.textContent = data.masked_email || email;
+        showView('verify');
+      } catch (err) {
+        setError(registerError, err.message || 'Ошибка регистрации.');
+      } finally {
+        submitBtn.style.opacity = '1';
+        submitBtn.textContent = 'Продолжить';
+      }
+    });
+
+    submitOtp.addEventListener('click', async () => {
+      setError(otpError, '');
+      const code = Array.from(otpInputs).map(input => (input.value || '').trim()).join('');
+      if (!/^\d{6}$/.test(code)) {
+        setError(otpError, 'Введите 6-значный код.');
+        return;
+      }
+      submitOtp.style.opacity = '0.7';
+      submitOtp.textContent = 'Проверяем...';
+      try {
+        const data = await requestJson('/auth/verify', { code });
+        window.location.href = data.redirect || '/app';
+      } catch (err) {
+        setError(otpError, err.message || 'Неверный код.');
+      } finally {
+        submitOtp.style.opacity = '1';
+        submitOtp.textContent = 'Подтвердить вход';
+      }
+    });
+
+    if (forgotForm) {
+      forgotForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        setError(forgotError, '');
+        const submitBtn = document.getElementById('submitForgot');
+        submitBtn.style.opacity = '0.7';
+        submitBtn.textContent = 'Отправляем...';
+        try {
+          const email = document.getElementById('forgotEmail').value;
+          const data = await requestJson('/auth/password/request', { email });
+          resetDisplayEmail.textContent = data.masked_email || email;
+          showView('resetVerify');
+        } catch (err) {
+          setError(forgotError, err.message || 'Ошибка запроса.');
+        } finally {
+          submitBtn.style.opacity = '1';
+          submitBtn.textContent = 'Отправить код';
+        }
+      });
+    }
+
+    if (submitResetOtp) {
+      submitResetOtp.addEventListener('click', async () => {
+        setError(resetOtpError, '');
+        const code = Array.from(resetOtpInputs).map(input => (input.value || '').trim()).join('');
+        if (!/^\d{6}$/.test(code)) {
+          setError(resetOtpError, 'Введите 6-значный код.');
+          return;
+        }
+        submitResetOtp.style.opacity = '0.7';
+        submitResetOtp.textContent = 'Проверяем...';
+        try {
+          await requestJson('/auth/password/verify', { code });
+          showView('resetPassword');
+        } catch (err) {
+          setError(resetOtpError, err.message || 'Неверный код.');
+        } finally {
+          submitResetOtp.style.opacity = '1';
+          submitResetOtp.textContent = 'Подтвердить код';
+        }
+      });
+    }
+
+    if (resetPasswordForm) {
+      resetPasswordForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        setError(resetPasswordError, '');
+        const submitBtn = document.getElementById('submitResetPassword');
+        submitBtn.style.opacity = '0.7';
+        submitBtn.textContent = 'Сохраняем...';
+        try {
+          const password = document.getElementById('resetPassword').value;
+          const confirm = document.getElementById('resetPasswordConfirm').value;
+          await requestJson('/auth/password/reset', { password, confirm });
+          showView('login');
+          const loginEmail = document.getElementById('loginEmail');
+          const forgotEmail = document.getElementById('forgotEmail');
+          if (loginEmail && forgotEmail) loginEmail.value = forgotEmail.value || '';
+          setError(loginError, 'Пароль обновлен. Войдите снова.');
+        } catch (err) {
+          setError(resetPasswordError, err.message || 'Ошибка запроса.');
+        } finally {
+          submitBtn.style.opacity = '1';
+          submitBtn.textContent = 'Сохранить пароль';
+        }
+      });
+    }
+
+    document.getElementById('toRegister').onclick = (e) => { e.preventDefault(); showView('register'); };
+    document.getElementById('toLogin').onclick = (e) => { e.preventDefault(); showView('login'); };
+    document.getElementById('toLoginFromRegisterEmail').onclick = (e) => { e.preventDefault(); showView('login'); };
+    document.getElementById('backToRegister').onclick = (e) => { e.preventDefault(); showView('register'); };
+    document.getElementById('backToLogin').onclick = (e) => { e.preventDefault(); showView('login'); };
+    document.getElementById('toForgot').onclick = (e) => { e.preventDefault(); showView('forgot'); };
+    document.getElementById('backToLoginFromForgot').onclick = (e) => { e.preventDefault(); showView('login'); };
+    document.getElementById('backToForgot').onclick = (e) => { e.preventDefault(); showView('forgot'); };
+    document.getElementById('backToResetVerify').onclick = (e) => { e.preventDefault(); showView('resetVerify'); };
+
+    document.querySelector('.auth-btn-email-v2').addEventListener('click', () => showView('registerEmail'));
+
+    triggers.forEach(btn => btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const view = btn.getAttribute('data-auth-trigger');
+      modal.classList.add('is-active');
+      showView(view === 'register' ? 'register' : 'login');
+    }));
+    
+    closeBtns.forEach(btn => btn.addEventListener('click', () => modal.classList.remove('is-active')));
+
+    const bindOtpInputs = (inputs) => {
+      inputs.forEach((input, idx) => {
+        input.addEventListener('input', (e) => {
+          e.target.value = e.target.value.replace(/\D/g, '').slice(0, 1);
+          if (e.target.value && inputs[idx + 1]) inputs[idx + 1].focus();
+        });
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Backspace' && !e.target.value && inputs[idx - 1]) inputs[idx - 1].focus();
+        });
+      });
+      if (inputs[0]) {
+        inputs[0].addEventListener('paste', (e) => {
+          const text = (e.clipboardData || window.clipboardData).getData('text');
+          const digits = (text || '').replace(/\D/g, '').slice(0, inputs.length).split('');
+          if (!digits.length) return;
+          digits.forEach((digit, idx) => {
+            if (inputs[idx]) inputs[idx].value = digit;
+          });
+          const next = inputs[Math.min(digits.length, inputs.length - 1)];
+          if (next) next.focus();
+          e.preventDefault();
+        });
+      }
+    };
+    bindOtpInputs(otpInputs);
+    bindOtpInputs(resetOtpInputs);
+  });
+</script>

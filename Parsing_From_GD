@@ -1,0 +1,823 @@
+const FOLDER_ID = (typeof Core !== 'undefined' && Core.config && Core.config.drive && Core.config.drive.contractsFolderId) || '1bqgeqpiNOTypw1qlC2UbGoVmwfbA2gAu';
+// пишем в тот же файл, что использует интерфейс, а не в отдельную копию
+const SPREADSHEET_ID = (typeof Core !== 'undefined' && Core.config && Core.config.spreadsheetId)
+  ? Core.config.spreadsheetId
+  : SpreadsheetApp.getActive().getId();
+const SHEET_NAME = (typeof Core !== 'undefined' && Core.config && Core.config.sheets && Core.config.sheets.contracts)
+  ? Core.config.sheets.contracts
+  : 'Реестр контрактов';
+
+// скрытый индекс обработанных контрактов
+const INDEX_SHEET_NAME = '__contracts_index__';
+
+// сколько файлов за 1 запуск (чтобы не падало на больших пачках)
+const BATCH_LIMIT = 25;
+const WATCH_TRIGGER_HANDLER = 'runContractsWatcher';
+const DRIVE_CHANGE_TRIGGER_HANDLER = 'runContractsDriveChange';
+const WATCH_PROP_KEY = 'contracts_last_seen';
+const WATCH_PROP_KEY_ID = 'contracts_last_seen_id';
+
+// =======================
+// ТОЧКА ВХОДА
+// =======================
+
+function processContracts(opts) {
+  opts = opts || {};
+  var summary = { added: [], processed: 0, skipped: false, remaining: 0 };
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    Logger.log('Скрипт уже выполняется (lock). Пропускаю.');
+    summary.skipped = true;
+    summary.message = 'Скрипт уже выполняется';
+    return summary;
+  }
+
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
+    const indexSheet = getOrCreateIndexSheet_(ss);
+
+    // 1) Заголовки (если лист совсем пустой)
+    const mainLastRow = getLastRowInColumns_(sheet, 1, 14);
+    if (mainLastRow === 0) {
+      // A..N (14 колонок), мы реально используем B, D, H, N
+      sheet.getRange(1, 1, 1, 14).setValues([[
+        '', 'Дата контракта', '', 'Юр.Лицо поставщика', '', '', '', 'Номер контракта', '', '', '', '', '', 'ID контракта'
+      ]]);
+    }
+
+    // 2) Реестр
+    const index = loadIndex_(indexSheet);
+
+    // 3) Подтягиваем уже записанные данные из основной таблицы (чтобы дублей не было НИКОГДА)
+    const existing = loadExistingFromMainSheet_(sheet);
+    existing.fileIds.forEach(id => index.fileIds.add(id));
+    existing.numbers.forEach(n => index.numbers.add(n));
+    existing.numDateKeys.forEach(k => index.numDateKeys.add(k));
+
+    // 4) В папке: убрать дубли по имени + PDF->GoogleDoc + удалить PDF
+    enforceFolderUniquenessAndPdfToGdoc_(FOLDER_ID);
+
+    // 5) Почистить дубли уже в таблице (по N и по номеру из H)
+    cleanupMainSheetDuplicates_(sheet);
+
+    // 6) Список файлов в папке (после чистки)
+    const files = listFolderFiles_(FOLDER_ID);
+
+    // 7) Кандидаты: только новые
+    const candidates = [];
+    for (let i = 0; i < files.length; i++) {
+      const meta = files[i];
+      const fileId = meta.id;
+      const baseName = normalizeBaseName_(meta.name);
+
+      if (index.fileIds.has(fileId)) continue;
+
+      const quickNum = detectContractNumberFromTitle_(baseName);
+      const quickNorm = quickNum ? normalizeContractNumber_(quickNum) : '';
+      const quickDateKey = normalizeDateKey_(meta.createdTime || meta.modifiedTime);
+      const quickNumDateKey = makeNumDateKey_(quickNorm, quickDateKey);
+
+      if (shouldSkipByNumber_(quickNorm, quickNumDateKey, index)) {
+        index.fileIds.add(fileId);
+        if (quickNumDateKey) index.numDateKeys.add(quickNumDateKey);
+        else if (quickNorm) index.numbers.add(quickNorm);
+        continue;
+      }
+
+      candidates.push({ meta: meta, baseName: baseName, quickNorm: quickNorm });
+    }
+
+    if (!candidates.length) {
+      Logger.log('Новых контрактов нет.');
+      removeMyTriggers_();
+      summary.message = 'Новых контрактов нет';
+      return summary;
+    }
+
+    candidates.sort(function(a, b) {
+      const da = new Date(a.meta.createdTime || a.meta.modifiedTime || 0).getTime();
+      const db = new Date(b.meta.createdTime || b.meta.modifiedTime || 0).getTime();
+      return da - db;
+    });
+
+    const batch = candidates.slice(0, BATCH_LIMIT);
+
+    const rowsToWrite = [];
+    const indexToWrite = [];
+
+    for (let k = 0; k < batch.length; k++) {
+      const item = batch[k];
+      const fileId = item.meta.id;
+
+      if (index.fileIds.has(fileId)) continue;
+
+      const file = DriveApp.getFileById(fileId);
+      const url = file.getUrl();
+      const createdDate = file.getDateCreated();
+
+      let text = '';
+      try {
+        text = getTextFromFile_(file);
+      } catch (e) {
+        Logger.log('Не удалось прочитать "' + file.getName() + '": ' + e);
+        continue;
+      }
+      if (!text) continue;
+
+      const headerFromText = detectTitleFromText_(text);
+      const linkText = normalize_(headerFromText || item.baseName);
+
+      // финальное имя файла в Диске (после возможного переименования)
+      renameDriveFile_(file, headerFromText || item.baseName || item.meta.name);
+      const finalName = file.getName();
+
+      // номер для дедупа
+      const rawNum =
+        detectContractNumber_(text) ||
+        detectContractNumberFromTitle_(linkText) ||
+        detectContractNumberFromTitle_(item.baseName) ||
+        '';
+
+      const numNorm = rawNum ? normalizeContractNumber_(rawNum) : item.quickNorm;
+      // дата загрузки (createdTime), без попыток вытянуть из текста
+      const contractDate = createdDate;
+      const dateKey = normalizeDateKey_(contractDate);
+      const numDateKey = makeNumDateKey_(numNorm, dateKey);
+
+      // железная защита от дублей
+      if (index.fileIds.has(fileId) || shouldSkipByNumber_(numNorm, numDateKey, index)) {
+        index.fileIds.add(fileId);
+        if (numDateKey) index.numDateKeys.add(numDateKey);
+        else if (numNorm) index.numbers.add(numNorm);
+        continue;
+      }
+
+      const supplier = detectSupplier_(text) || '';
+      // отображаем полное имя файла из Диска (после переименования)
+      const displayText = finalName || linkText;
+      const hyperlink = makeHyperlinkFormula(url, displayText);
+
+      // пишем только: B, D, H, N
+      rowsToWrite.push({
+        B: contractDate || '',
+        D: supplier || '',
+        H: hyperlink || displayText || '',
+        N: fileId || ''
+      });
+
+      indexToWrite.push([fileId, numNorm || '', numDateKey || '', item.baseName || '', linkText || '', new Date()]);
+
+      summary.added.push({ title: linkText || item.baseName || file.getName(), url: url });
+
+      index.fileIds.add(fileId);
+      if (numDateKey) index.numDateKeys.add(numDateKey);
+      else if (numNorm) index.numbers.add(numNorm);
+    }
+
+    if (rowsToWrite.length) {
+      const startRow = getLastRowInColumns_(sheet, 1, 14) + 1;
+      const n = rowsToWrite.length;
+
+      sheet.getRange(startRow, 2, n, 1).setValues(rowsToWrite.map(r => [r.B]));   // B
+      sheet.getRange(startRow, 4, n, 1).setValues(rowsToWrite.map(r => [r.D]));   // D
+      sheet.getRange(startRow, 8, n, 1).setValues(rowsToWrite.map(r => [r.H]));   // H
+      sheet.getRange(startRow, 14, n, 1).setValues(rowsToWrite.map(r => [r.N]));  // N
+
+      sheet.getRange(startRow, 2, n, 1).setNumberFormat('dd.MM.yyyy');
+    }
+
+    if (indexToWrite.length) {
+      indexSheet.getRange(indexSheet.getLastRow() + 1, 1, indexToWrite.length, 6).setValues(indexToWrite);
+    }
+
+    summary.processed = rowsToWrite.length;
+
+    const remaining = candidates.length - BATCH_LIMIT;
+    if (remaining > 0) {
+      scheduleNextRun_();
+      Logger.log('Обработано: ' + rowsToWrite.length + ', осталось примерно: ' + remaining + '. Продолжу следующим запуском.');
+      summary.remaining = remaining;
+    } else {
+      removeMyTriggers_();
+      Logger.log('Готово. Все новые контракты обработаны.');
+      summary.remaining = 0;
+    }
+
+    if (summary.added.length) {
+      var titles = summary.added.map(function (a) { return a && a.title ? String(a.title) : 'контракт'; });
+      summary.message = 'Добавлены ' + titles.join(', ');
+    } else {
+      summary.message = 'Новых контрактов нет';
+    }
+
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
+
+  return summary;
+}
+
+// =======================
+// ТРИГГЕРЫ
+// =======================
+
+function ensureContractsWatchTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  var hasTrigger = triggers.some(function (trigger) {
+    return trigger.getHandlerFunction && trigger.getHandlerFunction() === WATCH_TRIGGER_HANDLER;
+  });
+  var hasDriveTrigger = triggers.some(function (trigger) {
+    return trigger.getHandlerFunction && trigger.getHandlerFunction() === DRIVE_CHANGE_TRIGGER_HANDLER;
+  });
+  if (!hasTrigger) {
+    ScriptApp.newTrigger(WATCH_TRIGGER_HANDLER)
+      .timeBased()
+      .everyMinutes(10)
+      .create();
+  }
+  if (!hasDriveTrigger) {
+    try {
+      var driveBuilder = ScriptApp.newTrigger(DRIVE_CHANGE_TRIGGER_HANDLER);
+      if (driveBuilder && typeof driveBuilder.forDrive === 'function') {
+        driveBuilder
+          .forDrive()
+          .onChange()
+          .create();
+      } else {
+        Logger.log('Drive-триггер не поддерживается в этом окружении. Используется таймерный режим.');
+      }
+    } catch (e) {
+      Logger.log('Не удалось создать Drive-триггер: ' + e);
+    }
+  }
+}
+
+function runContractsWatcher() {
+  var props = PropertiesService.getScriptProperties();
+  var lastSeen = props.getProperty(WATCH_PROP_KEY) || '';
+  var lastSeenId = props.getProperty(WATCH_PROP_KEY_ID) || '';
+  var latest = getLatestFolderFileMeta_(FOLDER_ID);
+  if (!latest) return;
+  var latestStamp = latest.modifiedTime || latest.createdTime || '';
+  if (!latestStamp) return;
+  if (!lastSeen || latestStamp > lastSeen || (latest.id && latest.id !== lastSeenId)) {
+    props.setProperty(WATCH_PROP_KEY, latestStamp);
+    if (latest.id) props.setProperty(WATCH_PROP_KEY_ID, latest.id);
+    processContracts({ source: 'watcher' });
+  }
+}
+
+function runContractsDriveChange(e) {
+  if (!e || !e.fileId) return;
+
+  var changeType = String(e.changeType || '').toUpperCase();
+  var allowed = {
+    'CREATE': true,
+    'MOVE': true,
+    'FILE_CREATED': true,
+    'ADD': true
+  };
+  if (changeType && !allowed[changeType]) return;
+
+  if (!isFileInFolder_(e.fileId, FOLDER_ID)) return;
+
+  processContracts({ source: 'drive_change', fileId: e.fileId, changeType: changeType });
+}
+
+function scheduleNextRun_() {
+  removeMyTriggers_();
+  ScriptApp.newTrigger('processContracts')
+    .timeBased()
+    .after(60 * 1000)
+    .create();
+}
+
+function removeMyTriggers_() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    const t = triggers[i];
+    if (t.getHandlerFunction && t.getHandlerFunction() === 'processContracts') {
+      ScriptApp.deleteTrigger(t);
+    }
+  }
+}
+
+function isFileInFolder_(fileId, folderId) {
+  try {
+    var file = DriveApp.getFileById(fileId);
+    var parents = file.getParents();
+    while (parents.hasNext()) {
+      if (parents.next().getId() === folderId) return true;
+    }
+  } catch (e) {
+    Logger.log('Не удалось проверить папку для файла ' + fileId + ': ' + e);
+  }
+  return false;
+}
+
+// =======================
+// INDEX SHEET
+// =======================
+
+function getOrCreateIndexSheet_(ss) {
+  let sh = ss.getSheetByName(INDEX_SHEET_NAME);
+  if (!sh) {
+    sh = ss.insertSheet(INDEX_SHEET_NAME);
+    sh.hideSheet();
+    sh.getRange(1, 1, 1, 6).setValues([['fileId', 'numNorm', 'numDateKey', 'baseName', 'linkText', 'processedAt']]);
+  } else if (sh.getLastColumn() < 6) {
+    sh.getRange(1, 1, 1, 6).setValues([['fileId', 'numNorm', 'numDateKey', 'baseName', 'linkText', 'processedAt']]);
+  }
+  return sh;
+}
+
+function loadIndex_(indexSheet) {
+  const lastRow = indexSheet.getLastRow();
+  const fileIds = new Set();
+  const numbers = new Set();
+  const numDateKeys = new Set();
+
+  if (lastRow < 2) return { fileIds, numbers, numDateKeys };
+
+  const vals = indexSheet.getRange(2, 1, lastRow - 1, 3).getValues();
+  for (let i = 0; i < vals.length; i++) {
+    const fid = String(vals[i][0] || '').trim();
+    const num = String(vals[i][1] || '').trim();
+    const numDate = String(vals[i][2] || '').trim();
+    if (fid) fileIds.add(fid);
+    if (num) numbers.add(num);
+    if (numDate) numDateKeys.add(numDate);
+  }
+  return { fileIds, numbers, numDateKeys };
+}
+
+// =======================
+// ЧТЕНИЕ УЖЕ СУЩЕСТВУЮЩИХ ДАННЫХ (быстро)
+// =======================
+
+function loadExistingFromMainSheet_(sheet) {
+  const lastRow = getLastRowInColumns_(sheet, 1, 14);
+  const fileIds = new Set();
+  const numbers = new Set();
+  const numDateKeys = new Set();
+
+  if (lastRow < 2) return { fileIds, numbers, numDateKeys };
+
+  const rows = lastRow - 1;
+
+  const ids = sheet.getRange(2, 14, rows, 1).getValues();           // N
+  const hDisp = sheet.getRange(2, 8, rows, 1).getDisplayValues();   // H display
+  const dateVals = sheet.getRange(2, 2, rows, 1).getValues();       // B values
+  const dateDisp = sheet.getRange(2, 2, rows, 1).getDisplayValues();// B display
+
+  for (let i = 0; i < rows; i++) {
+    const id = String(ids[i][0] || '').trim();
+    if (id) fileIds.add(id);
+
+    const disp = String(hDisp[i][0] || '').trim();
+    if (disp) {
+      const raw = detectContractNumberFromTitle_(disp) || disp;
+      const norm = normalizeContractNumber_(raw);
+      if (norm) {
+        numbers.add(norm);
+        const dateKey = normalizeDateKey_(dateVals[i] && dateVals[i][0] ? dateVals[i][0] : '', dateDisp[i] && dateDisp[i][0] ? dateDisp[i][0] : '');
+        const numDateKey = makeNumDateKey_(norm, dateKey);
+        if (numDateKey) numDateKeys.add(numDateKey);
+      }
+    }
+  }
+
+  return { fileIds, numbers, numDateKeys };
+}
+
+// =======================
+// ДЕДУП В ТАБЛИЦЕ
+// =======================
+
+function shouldSkipByNumber_(numNorm, numDateKey, index) {
+  if (!numNorm) return false;
+  var hasDateSet = index && index.numDateKeys && index.numDateKeys.size > 0;
+
+  if (numDateKey && index && index.numDateKeys && index.numDateKeys.has(numDateKey)) return true;
+
+  // если есть дата, но в индексе хранятся только старые записи без даты — не добавляем дубль
+  if (numDateKey && index && index.numbers && index.numbers.has(numNorm) && !hasDateSet) return true;
+
+  if (!numDateKey && index && index.numbers && index.numbers.has(numNorm)) return true;
+  return false;
+}
+
+function cleanupMainSheetDuplicates_(sheet) {
+  const lastRow = getLastRowInColumns_(sheet, 1, 14);
+  if (lastRow < 3) return;
+
+  const rows = lastRow - 1;
+  const ids = sheet.getRange(2, 14, rows, 1).getValues();
+  const hDisp = sheet.getRange(2, 8, rows, 1).getDisplayValues();
+
+  const seenId = new Set();
+  const seenNum = new Set();
+  const duplicates = [];
+
+  for (let i = 0; i < rows; i++) {
+    const id = String(ids[i][0] || '').trim();
+    const disp = String(hDisp[i][0] || '').trim();
+
+    let numNorm = '';
+    if (disp) {
+      const raw = detectContractNumberFromTitle_(disp) || disp;
+      numNorm = normalizeContractNumber_(raw);
+    }
+
+    if (id) {
+      if (seenId.has(id)) { duplicates.push({ row: i + 2, reason: 'fileId' }); continue; }
+      seenId.add(id);
+    }
+
+    if (numNorm) {
+      if (seenNum.has(numNorm)) { duplicates.push({ row: i + 2, reason: 'num' }); continue; }
+      seenNum.add(numNorm);
+    }
+  }
+
+  if (duplicates.length) {
+    Logger.log('Обнаружены дубли в основной таблице (не удаляем): ' + duplicates.length);
+  }
+}
+
+function getLastRowInColumns_(sheet, startCol, numCols) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow === 0) return 0;
+
+  const values = sheet.getRange(1, startCol, lastRow, numCols).getValues();
+  for (let i = values.length - 1; i >= 0; i--) {
+    const row = values[i];
+    for (let j = 0; j < row.length; j++) {
+      if (row[j] !== '' && row[j] !== null) return i + 1;
+    }
+  }
+  return 0;
+}
+
+// =======================
+// ПАПКА: ДЕДУП И PDF->GDOC
+// =======================
+
+function enforceFolderUniquenessAndPdfToGdoc_(folderId) {
+  const files = listFolderFiles_(folderId);
+
+  const groups = new Map();
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const base = normalizeBaseName_(f.name);
+    const numFromTitle = detectContractNumberFromTitle_(base);
+    const numNorm = numFromTitle ? normalizeContractNumber_(numFromTitle) : '';
+    const dateKey = normalizeDateKey_(f.createdTime || f.modifiedTime);
+    const groupKey = numNorm ? makeNumDateKey_(numNorm, dateKey) : (dateKey ? (base + '|' + dateKey) : base);
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push(f);
+  }
+
+  groups.forEach(function(arr) {
+    arr.sort(function(a, b) {
+      const pa = mimePriority_(a.mimeType);
+      const pb = mimePriority_(b.mimeType);
+      if (pa !== pb) return pb - pa;
+      const ta = new Date(a.modifiedTime || 0).getTime();
+      const tb = new Date(b.modifiedTime || 0).getTime();
+      return tb - ta;
+    });
+
+    const keep = arr[0];
+
+    const baseName = normalizeBaseName_(keep.name);
+
+    // удалить все остальные дубли (любой тип)
+    for (let i = 1; i < arr.length; i++) {
+      try { DriveApp.getFileById(arr[i].id).setTrashed(true); } catch (e) {}
+    }
+
+    // если PDF — конвертируем в Google Doc и удаляем PDF
+    if (keep.mimeType === MimeType.PDF) {
+      try {
+        const gdocId = convertPdfToGoogleDoc_(folderId, keep.id, baseName);
+        try { DriveApp.getFileById(keep.id).setTrashed(true); } catch (e) {}
+        try {
+          var gdocFile = DriveApp.getFileById(gdocId);
+          if (normalizeDriveName_(gdocFile.getName()) !== normalizeDriveName_(baseName)) {
+            gdocFile.setName(baseName);
+          }
+        } catch (e) {}
+      } catch (e) {
+        Logger.log('PDF->GDoc не удалась для "' + keep.name + '": ' + e);
+      }
+    } else {
+      // просто привести имя к базе
+      try {
+        var keepFile = DriveApp.getFileById(keep.id);
+        if (normalizeDriveName_(keepFile.getName()) !== normalizeDriveName_(baseName)) {
+          keepFile.setName(baseName);
+        }
+      } catch (e) {}
+    }
+  });
+}
+
+function mimePriority_(mime) {
+  if (mime === MimeType.GOOGLE_DOCS) return 100;
+  if (isWordMime_(mime)) return 80;
+  if (mime === MimeType.PDF) return 60;
+  return 10;
+}
+
+function isWordMime_(mime) {
+  const m = String(mime || '').toLowerCase();
+  return (m === 'application/msword' || m.indexOf('wordprocessingml') !== -1);
+}
+
+function convertPdfToGoogleDoc_(folderId, pdfId, baseName) {
+  const resource = {
+    name: baseName,
+    mimeType: MimeType.GOOGLE_DOCS,
+    parents: [folderId]
+  };
+
+  const copied = Drive.Files.copy(resource, pdfId, { fields: 'id' });
+  return copied.id;
+}
+
+// =======================
+// LIST FILES (Drive API v3)
+// =======================
+
+function listFolderFiles_(folderId) {
+  const out = [];
+  let pageToken;
+
+  do {
+    const resp = Drive.Files.list({
+      q: "'" + folderId + "' in parents and trashed=false",
+      pageSize: 1000,
+      pageToken: pageToken,
+      fields: 'files(id,name,mimeType,createdTime,modifiedTime),nextPageToken'
+    });
+
+    const files = resp.files || [];
+    for (let i = 0; i < files.length; i++) out.push(files[i]);
+
+    pageToken = resp.nextPageToken;
+  } while (pageToken);
+
+  return out;
+}
+
+function getLatestFolderFileMeta_(folderId) {
+  var resp = Drive.Files.list({
+    q: "'" + folderId + "' in parents and trashed=false",
+    orderBy: 'modifiedTime desc',
+    pageSize: 1,
+    fields: 'files(id,name,createdTime,modifiedTime),nextPageToken'
+  });
+  var files = resp.files || [];
+  return files.length ? files[0] : null;
+}
+
+// =======================
+// ЧТЕНИЕ ТЕКСТА
+// =======================
+
+function getTextFromFile_(file) {
+  const mime = file.getMimeType();
+
+  if (mime === MimeType.GOOGLE_DOCS) {
+    return DocumentApp.openById(file.getId()).getBody().getText();
+  }
+
+  // конвертация во временный GDoc для чтения
+  const temp = Drive.Files.copy(
+    { name: 'TEMP_READ_' + Date.now(), mimeType: MimeType.GOOGLE_DOCS },
+    file.getId(),
+    { fields: 'id' }
+  );
+
+  try {
+    return DocumentApp.openById(temp.id).getBody().getText();
+  } finally {
+    try { Drive.Files.remove(temp.id); } catch (e) {}
+  }
+}
+
+// =======================
+// HYPERLINK
+// =======================
+
+function makeHyperlinkFormula(url, text) {
+  const safeUrl = String(url || '').replace(/"/g, '""');
+  const safeText = String(text || '').replace(/"/g, '""');
+  return '=HYPERLINK("' + safeUrl + '";"' + safeText + '")';
+}
+
+// =======================
+// ПЕРЕИМЕНОВАНИЕ ФАЙЛОВ В GDRIVE
+// =======================
+
+function renameDriveFile_(file, desiredTitle) {
+  if (!file || !desiredTitle) return;
+
+  const safeBase = normalizeDriveName_(desiredTitle);
+  if (!safeBase) return;
+
+  const mime = file.getMimeType && file.getMimeType();
+  let targetName = safeBase;
+
+  if (mime && mime !== MimeType.GOOGLE_DOCS) {
+    const ext = extractExtension_(file.getName());
+    if (ext) targetName = safeBase + ext;
+  }
+
+  const current = normalizeDriveName_(file.getName());
+  if (current === normalizeDriveName_(targetName)) return;
+
+  try {
+    file.setName(targetName);
+  } catch (e) {
+    Logger.log('Не удалось переименовать файл "' + file.getName() + '": ' + e);
+  }
+}
+
+function normalizeDriveName_(name) {
+  if (!name) return '';
+  let s = normalize_(name);
+  s = s.replace(/[\\/:*?"<>|]/g, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+function extractExtension_(name) {
+  const m = /\.[^.]+$/.exec(String(name || '').trim());
+  return m ? m[0] : '';
+}
+
+// =======================
+// НОРМАЛИЗАЦИЯ ИМЕН
+// =======================
+
+function normalizeBaseName_(name) {
+  let s = String(name || '').trim();
+  s = s.replace(/\.(pdf|docx?|rtf)$/i, '');
+  s = s.replace(/\s*\(\d+\)\s*$/i, '');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+function normalize_(s) {
+  return s ? s.replace(/\s+/g, ' ').trim() : '';
+}
+
+// =======================
+// НОМЕР / ЗАГОЛОВОК
+// =======================
+
+function detectTitleFromText_(text) {
+  const slice = text.slice(0, 4000);
+  const re = /(Проект\s+контракта\s*№\s*[\w./-]+|Контракт\s*(?:№|N)\s*[\w./-]+|Договор\s*(?:№|N)\s*[\w./-]+)/i;
+  const m = slice.match(re);
+  return m ? normalize_(m[0]) : null;
+}
+
+function detectContractNumber_(text) {
+  const slice = text.slice(0, 20000);
+
+  let m = slice.match(/(?:Контракт|Договор)\s*(?:№|N)\s*([0-9A-Za-zА-Яа-яЁё\/\-.]+)/i);
+  if (m && m[1]) return normalize_(m[1]);
+
+  m = slice.match(/(?:№|N)\s*([0-9A-Za-zА-Яа-яЁё\/\-.]{4,})/i);
+  return (m && m[1]) ? normalize_(m[1]) : null;
+}
+
+function detectContractNumberFromTitle_(title) {
+  if (!title) return null;
+  const s = String(title);
+  const m = s.match(/(?:№|N)\s*([0-9A-Za-zА-Яа-яЁё\/\-.]+)/i);
+  return (m && m[1]) ? normalize_(m[1]) : null;
+}
+
+function normalizeContractNumber_(v) {
+  let s = String(v || '').trim();
+  s = s.replace(/\.(pdf|docx?|rtf)$/i, '');
+  s = s.replace(/№/g, '');
+  s = s.toUpperCase();
+  s = s.replace(/\s+/g, '');
+  s = s.replace(/[^0-9A-ZА-ЯЁ\/\-.]/g, '');
+  s = s.replace(/^[-\/.]+/, '').replace(/[-\/.]+$/, '');
+  return s;
+}
+
+// =======================
+// ДАТА
+// =======================
+
+function makeNumDateKey_(num, dateKey) {
+  if (!num) return '';
+  return dateKey ? (num + '|' + dateKey) : num;
+}
+
+function normalizeDateKey_(value, display) {
+  var dt = null;
+
+  if (Object.prototype.toString.call(value) === '[object Date]' && isFinite(value.getTime ? value.getTime() : NaN)) {
+    dt = value;
+  }
+
+  if (!dt && value) {
+    var parsed = parseRuDate_(value);
+    if (parsed) dt = parsed;
+  }
+
+  if (!dt && display) {
+    var parsedDisp = parseRuDate_(display);
+    if (parsedDisp) dt = parsedDisp;
+  }
+
+  if (!dt && value) {
+    var plain = new Date(value);
+    if (!isNaN(plain)) dt = plain;
+  }
+
+  if (!dt) return '';
+  return Utilities.formatDate(dt, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+function detectContractDate_(text) {
+  const slice = text.slice(0, 20000);
+
+  let m = slice.match(/\b(\d{1,2}[./]\d{1,2}[./]\d{2,4})\b/);
+  if (m && m[1]) {
+    const d = parseRuDate_(m[1]);
+    if (d) return d;
+  }
+
+  m = slice.match(/«\s*(\d{1,2})\s*»\s*(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s*(\d{4})/i);
+  if (m) {
+    const day = parseInt(m[1], 10);
+    const month = ruMonthToNumber_(m[2]);
+    const year = parseInt(m[3], 10);
+    if (isFinite(day) && isFinite(month) && isFinite(year)) return new Date(year, month - 1, day);
+  }
+
+  return null;
+}
+
+function parseRuDate_(s) {
+  const parts = String(s).split(/[./]/).map(p => p.trim());
+  if (parts.length !== 3) return null;
+
+  let d = parseInt(parts[0], 10);
+  let m = parseInt(parts[1], 10);
+  let y = parseInt(parts[2], 10);
+
+  if (!isFinite(d) || !isFinite(m) || !isFinite(y)) return null;
+  if (y < 100) y = 2000 + y;
+
+  const dt = new Date(y, m - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== (m - 1) || dt.getDate() !== d) return null;
+  return dt;
+}
+
+function ruMonthToNumber_(m) {
+  const map = {
+    'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
+    'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
+  };
+  return map[String(m || '').toLowerCase()] || NaN;
+}
+
+// =======================
+// ПОСТАВЩИК
+// =======================
+
+function detectSupplier_(text) {
+  const slice = text.slice(0, 30000);
+
+  const stolyarovPatterns = [
+    /Столяров\s+Максим\s+Анатольевич/i,
+    /ИП\s+Столяров\s+Максим\s+Анатольевич/i,
+    /Индивидуальн\w*\s+предпринимател\w*\s+СТОЛЯРОВ\s+МАКСИМ\s+АНАТОЛЬЕВИЧ/i,
+    /Столяров\s*М\.?\s*А\.?/i
+  ];
+  for (let i = 0; i < stolyarovPatterns.length; i++) {
+    if (stolyarovPatterns[i].test(slice)) return 'ИП Столяров М.А.';
+  }
+
+  const stolyarovaPatterns = [
+    /Столярова\s+К[а-яЁё]*\s+В[а-яЁё]*/i,
+    /Столярова\s*К\.?\s*В\.?/i
+  ];
+  for (let j = 0; j < stolyarovaPatterns.length; j++) {
+    if (stolyarovaPatterns[j].test(slice)) return 'ИП Столярова К.В.';
+  }
+
+  return null;
+}

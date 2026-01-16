@@ -1,0 +1,1961 @@
+<script>
+  var UIWarehouse = (function () {
+
+    var incomesCache   = [];
+    var expensesCache  = [];
+    var balancesCache  = [];
+    var openingBalances = [];
+    var openingBalancesDateIso = '';
+    var movesCache     = [];
+    var itemsCache     = [];
+
+    var forcedMoveFilter = '';
+
+    var movesSortAsc     = false;
+    var incomesSortAsc   = false;
+    var expensesSortAsc  = false;
+    var balancesSortMode = 'available';
+    var balancesDateIso  = '';
+
+    var refreshTimer      = null;
+    var refreshGeneration = 0;
+    var lastMode          = null;
+    var readyReported     = false;
+    var warehouseStylesInjected = false;
+
+    var ruWeekdaysShort = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+    var ruMonthsGen = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+
+    function injectWarehouseStyles() {
+      if (warehouseStylesInjected) return;
+      warehouseStylesInjected = true;
+      var style = document.createElement('style');
+      style.id = 'warehouse-styles';
+      style.textContent = `
+        .warehouse-toolbar{display:flex;justify-content:space-between;align-items:center;padding:10px 4px;gap:16px;flex-wrap:wrap;}
+        .warehouse-brand{display:flex;align-items:center;gap:12px;}
+        .warehouse-brand-badge{width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,#c67c43 0%,#b45f26 60%,#9c4a14 100%);display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:800;box-shadow:0 14px 30px rgba(156,74,20,0.28);font-size:18px;}
+        .warehouse-brand-text{display:flex;flex-direction:column;line-height:1.2;}
+        .warehouse-brand-title{font-weight:800;color:var(--text-main);font-size:18px;}
+        .warehouse-brand-subtitle{display:none;}
+        .warehouse-toolbar-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+        .warehouse-subtoolbar{display:flex;justify-content:flex-start;align-items:center;gap:16px;flex-wrap:wrap;padding:6px 4px;}
+        .warehouse-tablist{display:flex;gap:10px;flex-wrap:wrap;background:#f1f5f9;border:none;border-radius:16px;padding:6px;}
+        .warehouse-tab{padding:10px 16px;border-radius:12px;border:1px solid transparent;background:transparent;color:var(--text-muted);font-weight:700;cursor:pointer;transition:all 0.15s ease;}
+        .warehouse-tab:hover{color:var(--text-main);}
+        .warehouse-tab-active{background:#fff;color:var(--text-main);border-color:transparent;box-shadow:0 6px 14px rgba(15,23,42,0.08);}
+        .warehouse-subtools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+        .warehouse-date-input{display:flex;align-items:center;gap:8px;padding:10px 12px;border:none;border-radius:16px;background:#f8fafc;box-shadow:0 12px 26px rgba(15,23,42,0.08), inset 0 1px 2px rgba(255,255,255,0.7);min-width:180px;}
+        .warehouse-date-input svg{color:#3b82f6;}
+        .warehouse-date-input input{border:none;outline:none;font-weight:700;color:var(--text-main);width:120px;background:transparent;}
+        .warehouse-search{position:relative;display:flex;align-items:center;min-width:260px;max-width:320px;flex:1;padding:0;border:none;background:transparent;box-shadow:none;}
+        .warehouse-search input{width:100%;height:40px;border-radius:12px;border:none;padding:0 14px 0 42px;background:#f1f5f9;font-size:13px;font-weight:800;color:var(--text-main);box-shadow:0 12px 26px rgba(15,23,42,0.08), inset 0 1px 2px rgba(255,255,255,0.7);outline:none;}
+        .warehouse-search input:focus{background:#fff;box-shadow:0 0 0 2px rgba(59,130,246,0.2);}
+        .warehouse-search svg{display:none;}
+        .warehouse-refresh-btn{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 14px;border-radius:12px;border:none;background:#fff;color:#475569;font-weight:700;cursor:pointer;box-shadow:0 8px 18px rgba(15,23,42,0.08);transition:all 0.12s ease;}
+        .warehouse-refresh-btn:hover{transform:translateY(-1px);box-shadow:0 12px 24px rgba(15,23,42,0.12);color:#2563eb;}
+        .warehouse-select{padding:10px 16px;border-radius:16px;border:none;background:#f8fafc;color:var(--text-main);font-weight:700;box-shadow:inset 0 1px 2px rgba(15,23,42,0.06);min-width:180px;}
+        #warehouseOpType{min-width:200px;}
+        .warehouse-primary-btn{padding:10px 16px;border-radius:14px;border:none;background:linear-gradient(135deg,#6f5bff 0%,#4b6bff 50%,#2f80ff 100%);color:#fff;font-weight:800;cursor:pointer;box-shadow:0 12px 26px rgba(55,95,255,0.25);transition:transform 0.12s ease, box-shadow 0.12s ease;}
+        .warehouse-primary-btn:hover{transform:translateY(-1px);box-shadow:0 14px 30px rgba(55,95,255,0.30);}
+        .warehouse-ghost-btn{padding:10px 14px;border-radius:14px;border:none;background:#fff;color:#475569;font-weight:700;cursor:pointer;box-shadow:0 8px 16px rgba(15,23,42,0.08);}
+        .warehouse-sort-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+        .warehouse-sort-btn{height:38px;padding:0 12px;border-radius:12px;border:none;background:#fff;color:#475569;font-weight:700;cursor:pointer;box-shadow:0 8px 18px rgba(15,23,42,0.08);transition:all 0.12s ease;}
+        .warehouse-sort-btn:hover{transform:translateY(-1px);box-shadow:0 12px 24px rgba(15,23,42,0.12);color:#1d4ed8;}
+        .warehouse-sort-btn.active{border-color:#3b82f6;background:#eff6ff;color:#1d4ed8;}
+        .warehouse-page{padding:14px 8px 24px 8px;}
+        .warehouse-section{display:flex;flex-direction:column;gap:12px;}
+        .warehouse-section-header{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:8px;padding:0 6px;}
+        .warehouse-section-title{font-size:18px;font-weight:800;color:var(--text-main);}
+        .warehouse-section-subtitle{color:var(--text-muted);font-weight:600;}
+        .warehouse-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;}
+        .warehouse-stock-card{background:#fff;border:none;box-shadow:0 12px 28px rgba(15,23,42,0.08);border-radius:18px;padding:14px 16px;display:flex;flex-direction:column;gap:12px;cursor:pointer;transition:transform 0.12s ease, box-shadow 0.12s ease;}
+        .warehouse-stock-card:hover{transform:translateY(-2px);box-shadow:0 18px 44px rgba(15,23,42,0.14);}
+        .warehouse-card-top{display:flex;justify-content:space-between;align-items:center;}
+        .warehouse-dot{width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 6px 14px rgba(34,197,94,0.35);}
+        .warehouse-dot.danger{background:#ef4444;box-shadow:0 6px 14px rgba(239,68,68,0.35);}
+        .warehouse-card-title{font-size:15px;font-weight:500;color:var(--text-main);line-height:1.3;}
+        .warehouse-card-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+        .warehouse-chip{padding:6px 10px;border-radius:12px;font-weight:700;font-size:12px;letter-spacing:0.3px;}
+        .warehouse-chip.positive{background:#e7f8ef;color:#1d9f55;}
+        .warehouse-chip.negative{background:#ffe9e9;color:#e63939;}
+        .warehouse-qty{font-size:26px;font-weight:800;color:var(--text-main);}
+        .warehouse-qty.negative{color:#e63939;}
+        .warehouse-table-card{background:#fff;border:none;border-radius:18px;box-shadow:0 14px 36px rgba(15,23,42,0.08);padding:6px 0 4px;overflow:hidden;}
+        .warehouse-table-header{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;border-bottom:none;background:#f8fafc;}
+        .warehouse-table-title{font-weight:800;color:var(--text-main);font-size:16px;}
+        table.data-table{width:100%;border-collapse:separate;border-spacing:0 10px;padding:0 12px;}
+        table.data-table th{background:#f8fafc;color:#64748b;text-transform:uppercase;font-size:11px;letter-spacing:0.08em;font-weight:800;border:none;padding:8px 14px;text-align:left;}
+        table.data-table tr.data-row{background:#fff;border-radius:14px;box-shadow:0 6px 18px rgba(15,23,42,0.08);}
+        table.data-table tr.data-row td{padding:14px 14px;border:none;font-weight:700;color:var(--text-main);}
+        table.data-table tr.data-row:hover{box-shadow:0 12px 26px rgba(15,23,42,0.12);background:#eff6ff;}
+        table.data-table tr.data-row-selected{outline:2px solid rgba(59,130,246,0.3);box-shadow:0 12px 26px rgba(59,130,246,0.2);background:#eff6ff;}
+        .warehouse-table-light tr.data-row td{font-weight:500;}
+        .warehouse-table-light .warehouse-pill{font-weight:500;}
+        .warehouse-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:12px;font-weight:800;font-size:12px;}
+        .warehouse-pill.green{background:#e7f8ef;color:#1d9f55;}
+        .warehouse-pill.yellow{background:#fff4e2;color:#d97706;}
+        .warehouse-pill.red{background:#ffe9e9;color:#e63939;}
+        .warehouse-qty-positive{color:#1d9f55;font-weight:800;}
+        .warehouse-qty-negative{color:#e63939;font-weight:800;}
+        .warehouse-qty-neutral{color:var(--text-main);font-weight:800;}
+        .warehouse-empty{padding:28px;border:none;border-radius:14px;text-align:center;color:var(--text-muted);font-weight:700;background:#f8fafc;box-shadow:inset 0 1px 0 rgba(255,255,255,0.6);}
+        .warehouse-mode-select{display:none;}
+        .warehouse-form-card{max-width:980px;margin:0 auto;background:#fff;border-radius:18px;border:none;box-shadow:0 20px 48px rgba(15,23,42,0.14);padding:24px 28px;}
+        .warehouse-form-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;gap:12px;}
+        .warehouse-form-title{font-size:18px;font-weight:800;color:var(--text-main);}
+        .warehouse-form-subtitle{font-size:12px;color:var(--text-muted);font-weight:600;margin-top:4px;}
+        .warehouse-modal-close{border:none;background:transparent;font-size:22px;cursor:pointer;color:var(--text-muted);}
+        .warehouse-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:12px;}
+        .warehouse-form-grid.income-grid{grid-template-columns:repeat(2,minmax(360px,1fr));}
+        .warehouse-field.full{grid-column:1 / -1;}
+        .warehouse-field{display:flex;flex-direction:column;gap:6px;}
+        .warehouse-label{font-size:12px;font-weight:800;color:var(--text-muted);letter-spacing:0.5px;text-transform:uppercase;}
+        .warehouse-label .required-star{color:#ef4444;margin-left:4px;}
+        .warehouse-input,.warehouse-select-input{width:100%;min-height:56px;padding:18px 18px;border-radius:14px;border:none;background:#f8fafc;color:var(--text-main);font-weight:700;outline:none;box-shadow:0 10px 22px rgba(15,23,42,0.08), inset 0 1px 2px rgba(255,255,255,0.7);box-sizing:border-box;}
+        .warehouse-field.full .warehouse-input{min-height:64px;}
+        .warehouse-input:focus,.warehouse-select-input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,0.15);background:#fff;}
+        .warehouse-checkbox-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;background:#f8fafc;border:none;box-shadow:inset 0 1px 2px rgba(15,23,42,0.04);}
+        .warehouse-toggle-row{display:grid;grid-template-columns:minmax(0,1fr) 72px 150px;align-items:center;gap:12px;padding:12px 14px;border-radius:16px;background:#f8fafc;border:1px solid #e2e8f0;box-shadow:0 12px 26px rgba(15,23,42,0.08);}
+        .warehouse-toggle-text{display:flex;flex-direction:column;gap:6px;min-width:0;}
+        .warehouse-toggle{position:relative;width:46px;height:26px;justify-self:center;}
+        .warehouse-toggle input{opacity:0;width:0;height:0;}
+        .warehouse-toggle-slider{position:absolute;cursor:pointer;inset:0;background:#e2e8f0;border-radius:999px;transition:none;box-shadow:inset 0 1px 2px rgba(15,23,42,0.12);}
+        .warehouse-toggle-slider::before{content:"";position:absolute;height:20px;width:20px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 6px 14px rgba(15,23,42,0.12);transition:transform .2s ease;}
+        .warehouse-toggle input:checked + .warehouse-toggle-slider::before{transform:translateX(20px);}
+        .warehouse-toggle input:checked + .warehouse-toggle-slider{background:#22c55e;}
+        .warehouse-status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;font-weight:800;font-size:12px;white-space:nowrap;}
+        .warehouse-status-pill.ready{background:#e7f8ef;color:#1d9f55;}
+        .warehouse-status-pill.transit{background:#fff4d6;color:#d97706;}
+        .warehouse-form-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:6px;}
+        .warehouse-combo-list{position:absolute;left:0;right:0;top:100%;margin-top:6px;background:#fff;border:1px solid #d7def0;border-radius:16px;box-shadow:0 16px 32px rgba(15,27,52,0.14);max-height:240px;overflow:auto;z-index:15000;display:none;padding:8px;}
+        .warehouse-combo-list .combo-item{padding:10px 12px;font-weight:700;color:#0f1d3a;cursor:pointer;display:flex;align-items:center;gap:8px;border-radius:10px;border:none;}
+        .warehouse-combo-list .combo-item:hover{background:#eef2ff;}
+        .warehouse-combo-list .combo-item.selected{background:#eef2ff;color:#2f44cc;}
+        .warehouse-note{font-size:12px;color:#8ca0c3;}
+        body.theme-dark .warehouse-page{background:#0b1020;color:#e2e8f0;}
+        body.theme-dark .warehouse-section-title{color:#e2e8f0;}
+        body.theme-dark .warehouse-section-subtitle{color:#94a3b8;}
+        body.theme-dark .warehouse-tablist{background:#0f172a;}
+        body.theme-dark .warehouse-tab{color:#94a3b8;}
+        body.theme-dark .warehouse-tab-active{background:#111827;color:#e2e8f0;}
+        body.theme-dark .warehouse-date-input,
+        body.theme-dark .warehouse-select,
+        body.theme-dark .warehouse-input,
+        body.theme-dark .warehouse-select-input{background:#0f172a;color:#e2e8f0;box-shadow:inset 0 1px 2px rgba(0,0,0,0.6);}
+        body.theme-dark .warehouse-stock-card,
+        body.theme-dark .warehouse-table-card,
+        body.theme-dark .warehouse-form-card{background:#0f172a;box-shadow:0 20px 40px rgba(0,0,0,0.45);}
+        body.theme-dark table.data-table tr.data-row{background:#0f172a;}
+        body.theme-dark table.data-table tr.data-row td{color:#e2e8f0;}
+        body.theme-dark table.data-table tr.data-row:hover{background:#111827;}
+        body.theme-dark .warehouse-table-header{background:#0f172a;}
+        body.theme-dark .warehouse-date-input,
+        body.theme-dark .warehouse-select,
+        body.theme-dark .warehouse-refresh-btn,
+        body.theme-dark .warehouse-sort-btn,
+        body.theme-dark .warehouse-ghost-btn{background:#0b1220;border:1px solid rgba(255,255,255,0.08);box-shadow:none;color:#e2e8f0;}
+        body.theme-dark .warehouse-search input{background:rgba(2,6,23,0.75);color:#f8fafc;box-shadow:inset 0 1px 2px rgba(0,0,0,0.6);}
+        body.theme-dark .warehouse-date-input input{color:#f8fafc;}
+        body.theme-dark .warehouse-search input::placeholder{color:#94a3b8;}
+        body.theme-dark .warehouse-toggle-row{background:#0f172a;border:1px solid rgba(255,255,255,0.08);box-shadow:0 16px 32px rgba(0,0,0,0.45);}
+        body.theme-dark .warehouse-toggle-slider{background:#1f2937;}
+        body.theme-dark .warehouse-status-pill.transit{background:#1f2937;color:#94a3b8;}
+        body.theme-dark table.data-table th{background:#0b1220;color:#94a3b8;}
+        body.theme-dark table.data-table tr.data-row{background:#0b1220;box-shadow:none;}
+        body.theme-dark table.data-table tr.data-row:hover{background:#101a2f;box-shadow:0 0 0 1px rgba(96,165,250,0.35);}
+        body.theme-dark table.data-table tr.data-row:hover td{background:#101a2f;}
+        body.theme-dark .warehouse-table-card{background:#0b1220;border:1px solid rgba(255,255,255,0.08);}
+        body.theme-dark .warehouse-stock-card{background:#0b1220;border:1px solid rgba(255,255,255,0.08);}
+        body.theme-dark .warehouse-empty{background:#0b1220;border-color:rgba(255,255,255,0.08);color:#94a3b8;}
+        body.theme-dark .warehouse-section-subtitle{color:#94a3b8;}
+      `;
+      document.head.appendChild(style);
+    }
+
+    /* ---------- Утилиты ---------- */
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function parseRuDateToIso(val) {
+      if (!val) return '';
+
+      if (val instanceof Date && !isNaN(val)) {
+        return isoFromYMD(val.getFullYear(), val.getMonth(), val.getDate());
+      }
+
+      var str = String(val).trim();
+      if (!str) return '';
+
+      var iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(str);
+      if (iso) return iso[1] + '-' + iso[2] + '-' + iso[3];
+
+      var m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(str);
+      if (m) return m[3] + '-' + m[2] + '-' + m[1];
+
+      var digits = str.replace(/\D/g, '');
+      if (digits.length === 8) return digits.slice(4) + '-' + digits.slice(2, 4) + '-' + digits.slice(0, 2);
+
+      var parsed = new Date(str);
+      if (!isNaN(parsed)) return isoFromYMD(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+
+      return '';
+    }
+
+    function normalizeItemName(value) {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    }
+
+    function toIsoDate(val) {
+      return parseRuDateToIso(val) || '';
+    }
+
+    function isKnownItemName(name) {
+      if (!name || !itemsCache || !itemsCache.length) return false;
+      var trimmed = normalizeItemName(name);
+      if (!trimmed) return false;
+      return itemsCache.some(function (it) {
+        return it && normalizeItemName(it.name) === trimmed;
+      });
+    }
+
+    function getUnitFromCache(name) {
+      if (!name || !itemsCache || !itemsCache.length) return '';
+      var trimmed = normalizeItemName(name);
+      if (!trimmed) return '';
+      var found = itemsCache.find(function (it) {
+        return it && normalizeItemName(it.name) === trimmed;
+      });
+      return found && found.unit ? found.unit : '';
+    }
+
+    function formatDateRu(dateVal) {
+      if (!dateVal) return '';
+      var iso = parseRuDateToIso(dateVal);
+      if (iso) {
+        var p = iso.split('-');
+        return p[2] + '.' + p[1] + '.' + p[0];
+      }
+      return String(dateVal);
+    }
+
+    function ruDateToDate(str) {
+      var m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(str);
+      return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null;
+    }
+
+    function isoFromYMD(y, m, d) {
+      return y + '-' + ('0' + (m + 1)).slice(-2) + '-' + ('0' + d).slice(-2);
+    }
+
+    function getTodayBadge() {
+      var now = new Date();
+      var weekday = ruWeekdaysShort[now.getDay()] || '';
+      var date = ('0' + now.getDate()).slice(-2) + ' ' + (ruMonthsGen[now.getMonth()] || '');
+      return {
+        weekday: weekday,
+        full: date + ' ' + now.getFullYear()
+      };
+    }
+
+    function getDateIsoFromInput(id) {
+      var el = document.getElementById(id);
+      return el ? parseRuDateToIso(el.value) : '';
+    }
+
+    function buildItemsLookup() {
+      var lookup = Object.create(null);
+      (itemsCache || []).forEach(function (it) {
+        if (!it || !it.name) return;
+        lookup[normalizeItemName(it.name)] = it.unit || '';
+      });
+      return lookup;
+    }
+
+    function enhanceBalances(data, dateIso) {
+      var hasItems = itemsCache && itemsCache.length;
+      return (data || [])
+        .filter(function (r) { return r && (!hasItems || isKnownItemName(r.item)); })
+        .map(function (r) {
+          var itemName = (r.item || '').trim();
+          return Object.assign({}, r, {
+            item: itemName,
+            itemLower: itemName.toLowerCase(),
+            date: dateIso || r.date
+          });
+        });
+    }
+
+    function enhanceIncomes(data) {
+      var itemsLookup = buildItemsLookup();
+      var hasItems = itemsCache && itemsCache.length;
+      return (data || [])
+        .filter(function (r) { return r && (!hasItems || isKnownItemName(r.item)); })
+        .map(function (r) {
+          var dateIso = toIsoDate(r.date || r.dateIso || '');
+          var sortKey = dateIso ? new Date(dateIso).getTime() : Number.NEGATIVE_INFINITY;
+          var unitVal = r.unit || itemsLookup[r.item] || '';
+          var dateRu = dateIso ? formatDateRu(dateIso) : formatDateRu(r.date);
+          var statusText = r.inStock ? 'прибыл на склад' : 'в пути';
+          var filterText = (
+            (r.item || '') + ' ' +
+            (r.invoiceNumber || '') + ' ' +
+            (dateRu || '') + ' ' +
+            unitVal + ' ' +
+            statusText
+          ).toLowerCase();
+
+          return Object.assign({}, r, {
+            dateIso: dateIso,
+            dateRu: dateRu,
+            unit: unitVal,
+            filterText: filterText,
+            sortKey: sortKey,
+            inStock: !!r.inStock
+          });
+        });
+    }
+
+    function enhanceExpenses(data) {
+      var hasItems = itemsCache && itemsCache.length;
+      return (data || [])
+        .filter(function (r) { return r && (!hasItems || isKnownItemName(r.item)); })
+        .map(function (r) {
+          var dateIso = toIsoDate(r.date || r.dateIso || '');
+          var sortKey = dateIso ? new Date(dateIso).getTime() : Number.NEGATIVE_INFINITY;
+          var dateRu = dateIso ? formatDateRu(dateIso) : formatDateRu(r.date);
+          var filterText = (
+            (r.item || '') + ' ' +
+            (r.org || '') + ' ' +
+            (dateRu || '') + ' ' +
+            (r.qty != null ? r.qty : '')
+          ).toLowerCase();
+          var qtyNum = (r.qty !== undefined && r.qty !== null) ? Number(r.qty) : '';
+
+          return Object.assign({}, r, {
+            dateIso: dateIso,
+            dateRu: dateRu,
+            qty: qtyNum,
+            filterText: filterText,
+            sortKey: sortKey
+          });
+        });
+    }
+
+    function enhanceMoves(data) {
+      var hasItems = itemsCache && itemsCache.length;
+      return (data || [])
+        .filter(function (r) { return r && (!hasItems || isKnownItemName(r.item)); })
+        .map(function (r) {
+          var dateIso = toIsoDate(r.date || r.dateIso || '');
+          var sortKey = dateIso ? new Date(dateIso).getTime() : Number.NEGATIVE_INFINITY;
+          var dateRu = dateIso ? formatDateRu(dateIso) : formatDateRu(r.date);
+          var op = r.operationType || r.type || '';
+          var opCode = (op === 'Приход') ? 'in' : (op === 'Расход') ? 'out' : '';
+          var filterText = (
+            (dateRu || '') + ' ' +
+            (r.contractNumber || '') + ' ' +
+            (r.item || '') + ' ' + op
+          ).toLowerCase();
+
+          return Object.assign({}, r, {
+            dateIso: dateIso,
+            dateRu: dateRu,
+            filterText: filterText,
+            opCode: opCode,
+            sortKey: sortKey
+          });
+        });
+    }
+
+    function rebuildDerivedCaches() {
+      if (balancesCache && balancesCache.length) {
+        balancesCache = enhanceBalances(balancesCache, balancesDateIso);
+      }
+      if (incomesCache && incomesCache.length) {
+        incomesCache = enhanceIncomes(incomesCache);
+      }
+      if (expensesCache && expensesCache.length) {
+        expensesCache = enhanceExpenses(expensesCache);
+      }
+      if (movesCache && movesCache.length) {
+        movesCache = enhanceMoves(movesCache);
+      }
+    }
+
+    function computeBalancesForDate(dateIso) {
+      var targetIso = dateIso || '';
+      var targetTs  = targetIso ? new Date(targetIso).getTime() : Number.POSITIVE_INFINITY;
+      var baseTs    = openingBalancesDateIso ? new Date(openingBalancesDateIso).getTime() : Number.NEGATIVE_INFINITY;
+      var balances  = Object.create(null);
+
+      function add(item, delta) {
+        if (!item || !isKnownItemName(item)) return;
+        var num = (delta !== undefined && delta !== null) ? Number(delta) : 0;
+        if (isNaN(num)) num = 0;
+        balances[item] = (balances[item] || 0) + num;
+      }
+
+      (itemsCache || []).forEach(function (it) {
+        if (it && it.name && balances[it.name] === undefined) {
+          balances[it.name] = 0;
+        }
+      });
+
+      if (!openingBalancesDateIso || baseTs <= targetTs) {
+        (openingBalances || []).forEach(function (r) {
+          if (!r || !r.item) return;
+          add(r.item, r.qty);
+        });
+      }
+
+      (incomesCache || []).forEach(function (r) {
+        if (!r || !r.item || !r.dateIso) return;
+        var ts = new Date(r.dateIso).getTime();
+        if (ts <= targetTs && (baseTs === Number.NEGATIVE_INFINITY || ts > baseTs)) add(r.item, r.qty);
+      });
+
+      (expensesCache || []).forEach(function (r) {
+        if (!r || !r.item || !r.dateIso) return;
+        var ts = new Date(r.dateIso).getTime();
+        if (ts <= targetTs && (baseTs === Number.NEGATIVE_INFINITY || ts > baseTs)) add(r.item, -(r.qty));
+      });
+
+      return Object.keys(balances)
+        .sort(function (a, b) { return a.localeCompare(b, 'ru', { sensitivity: 'base' }); })
+        .map(function (item) {
+          var qty = balances[item];
+          return {
+            item: item,
+            itemLower: item.toLowerCase(),
+            qty: qty,
+            date: targetIso
+          };
+        });
+    }
+
+    function markReady() {
+      if (readyReported) return;
+      readyReported = true;
+      if (window.AppModules && window.AppModules.markReady) {
+        window.AppModules.markReady('warehouse');
+      }
+    }
+
+    /* ---------- init ---------- */
+
+    function load() {
+      injectWarehouseStyles();
+      setToolbarContent(
+        '<div class="warehouse-toolbar">' +
+          '<div class="warehouse-brand">' +
+            '<div class="warehouse-brand-badge" aria-hidden="true">📦</div>' +
+            '<div class="warehouse-brand-text">' +
+              '<div class="warehouse-brand-title">Склад</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="warehouse-toolbar-actions">' +
+            '<button class="warehouse-refresh-btn" onclick="UIWarehouse.manualRefresh(true)">' +
+              '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a8 8 0 0 0-7.45 5.1l1.88.7A6 6 0 0 1 12 6a6 6 0 0 1 4.24 1.76L14 10h6V4l-1.94 1.94A8 8 0 0 0 12 4Zm7.45 10.9-1.88-.7A6 6 0 0 1 12 18a6 6 0 0 1-4.24-1.76L10 14H4v6l1.94-1.94A8 8 0 0 0 12 20a8 8 0 0 0 7.45-5.1Z" fill="currentColor"></path></svg>' +
+              'Обновить' +
+            '</button>' +
+            '<div class="warehouse-tablist">' + buildModeTabs() + '</div>' +
+          '</div>' +
+        '</div>'
+      );
+
+      setSubtoolbarContent(
+        '<div class="warehouse-subtoolbar">' +
+          '<div class="warehouse-subtools">' +
+            '<div class="warehouse-date-input">' +
+              '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2a1 1 0 0 0-1 1v1H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1V3a1 1 0 1 0-2 0v1H8V3a1 1 0 0 0-1-1Zm12 6H5v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8Z" fill="currentColor"></path></svg>' +
+              '<input id="warehouseDate" placeholder="дд.мм.гггг" aria-label="Дата" ' +
+                'onblur="UIWarehouse.onDateBlur(this)" oninput="UIWarehouse.onDateInput()" onchange="UIWarehouse.onDateChange()">' +
+            '</div>' +
+            '<div class="warehouse-search">' +
+              '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 5 1.5-1.5-5-5Zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14Z" fill="currentColor"></path></svg>' +
+              '<input id="warehouseFilter" type="search" placeholder="Поиск по товару..." oninput="UIWarehouse.applyFilter()">' +
+            '</div>' +
+            '<div id="warehouseBalancesSort" class="warehouse-sort-group" style="display:none;">' +
+              '<button type="button" id="warehouseSortAvailable" class="warehouse-sort-btn">Сначала товары в наличии</button>' +
+              '<button type="button" id="warehouseSortMissing" class="warehouse-sort-btn">Сначала отсутствующие товары</button>' +
+            '</div>' +
+            '<select id="warehouseOpType" class="warehouse-select" onchange="UIWarehouse.applyFilter()">' +
+              '<option value="all">Все операции</option>' +
+              '<option value="in">Приход</option>' +
+              '<option value="out">Расход</option>' +
+            '</select>' +
+            '<button id="btnAddIncome" class="warehouse-primary-btn" style="display:none" onclick="UIWarehouse.addIncome()">+ Приход</button>' +
+            '<button id="btnAddItem" class="warehouse-primary-btn" style="display:none" onclick="UIWarehouse.addItem()">+ Создать</button>' +
+            '<select id="warehouseMode" class="warehouse-mode-select" onchange="UIWarehouse.manualRefresh()">' +
+              '<option value="balances">Остатки</option>' +
+              '<option value="incomes">Приходы</option>' +
+              '<option value="expenses">Расходы</option>' +
+              '<option value="moves">Движения</option>' +
+              '<option value="items">Товары</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>'
+      );
+
+      setBottomPanelTitles('Склад: обороты', 'Склад: остатки');
+
+      // Календарь из глобального ui_shell.html
+      if (typeof window.attachDateInput === 'function') {
+        window.attachDateInput('warehouseDate');
+      }
+
+      var filterInput = document.getElementById('warehouseFilter');
+      if (filterInput && !filterInput.dataset.filterBound) {
+        filterInput.dataset.filterBound = '1';
+        filterInput.addEventListener('input', function () {
+          forcedMoveFilter = '';
+        });
+      }
+
+      var sortAvailableBtn = document.getElementById('warehouseSortAvailable');
+      var sortMissingBtn = document.getElementById('warehouseSortMissing');
+      if (sortAvailableBtn) sortAvailableBtn.onclick = function () { setBalancesSort('available'); };
+      if (sortMissingBtn) sortMissingBtn.onclick = function () { setBalancesSort('missing'); };
+      updateBalancesSortControls();
+
+      startRefresh(true);
+      preloadItemsCache();
+
+      if (window.pendingWarehouseItem) {
+        setTimeout(function () {
+          showMovesForItem(window.pendingWarehouseItem);
+          window.pendingWarehouseItem = '';
+        }, 50);
+      }
+    }
+
+    /* ---------- управление обновлениями ---------- */
+
+    function manualRefresh(forceServer) {
+      return startRefresh(true, { forceServer: !!forceServer });
+    }
+
+    function startRefresh(immediate, options) {
+      options = options || {};
+      if (refreshTimer) clearTimeout(refreshTimer);
+      if (immediate) {
+        return doRefresh(options);
+      }
+      return new Promise(function (resolve) {
+        refreshTimer = setTimeout(function () {
+          refreshTimer = null;
+          resolve(doRefresh(options));
+        }, 150);
+      });
+    }
+
+    function doRefresh(options) {
+      options = options || {};
+      refreshTimer = null;
+      var gen = ++refreshGeneration;
+
+      var modeEl = document.getElementById('warehouseMode');
+      if (!modeEl) return Promise.resolve();
+      var mode = options.modeOverride || modeEl.value;
+      if (modeEl && options.modeOverride) modeEl.value = options.modeOverride;
+      updateTabActiveState(mode);
+
+      var dateInput = document.getElementById('warehouseDate');
+
+      if (dateInput && lastMode !== mode && !options.keepDate) {
+        if (mode === 'balances') {
+          if (!dateInput.value) {
+            var now = new Date();
+            dateInput.value = formatDateRu(
+              isoFromYMD(now.getFullYear(), now.getMonth(), now.getDate())
+            );
+          }
+        } else {
+          dateInput.value = '';
+        }
+      }
+
+      var btnAddIncome     = document.getElementById('btnAddIncome');
+      var btnAddItem       = document.getElementById('btnAddItem');
+      var btnDeleteExpense = document.getElementById('btnDeleteExpense');
+      var balancesSortWrap = document.getElementById('warehouseBalancesSort');
+      if (btnAddIncome)     btnAddIncome.style.display     = (mode === 'incomes'  ? 'inline-block' : 'none');
+      if (btnAddItem)       btnAddItem.style.display       = (mode === 'items'    ? 'inline-block' : 'none');
+      if (btnDeleteExpense) btnDeleteExpense.style.display = (mode === 'expenses' ? 'inline-block' : 'none');
+      if (balancesSortWrap) balancesSortWrap.style.display = (mode === 'balances' ? 'flex' : 'none');
+
+      var opSel = document.getElementById('warehouseOpType');
+      if (opSel) {
+        opSel.disabled = (mode !== 'moves');
+        opSel.style.display = (mode === 'moves') ? 'inline-block' : 'none';
+      }
+      if (mode === 'balances') updateBalancesSortControls();
+
+      var loadOpts = { forceServer: !!options.forceServer };
+      lastMode = mode;
+
+      if (mode === 'balances')        return loadBalances(gen, loadOpts);
+      else if (mode === 'incomes')    return loadIncomes(gen, loadOpts);
+      else if (mode === 'expenses')   return loadExpenses(gen, loadOpts);
+      else if (mode === 'moves')      return loadMoves(gen, loadOpts);
+      else if (mode === 'items')      return loadItems(gen, loadOpts);
+
+      lastMode = mode;
+      return Promise.resolve();
+    }
+
+    function renderCurrentModeFromCache() {
+      var modeEl = document.getElementById('warehouseMode');
+      if (!modeEl) return false;
+      var mode = modeEl.value;
+      if (mode === 'balances' && balancesCache && balancesCache.length) {
+        renderBalancesTable();
+        return true;
+      }
+      if (mode === 'incomes' && incomesCache && incomesCache.length) {
+        renderIncomesTable();
+        return true;
+      }
+      if (mode === 'expenses' && expensesCache && expensesCache.length) {
+        renderExpensesTable();
+        return true;
+      }
+      if (mode === 'moves' && movesCache && movesCache.length) {
+        renderMovesTable();
+        return true;
+      }
+      if (mode === 'items' && itemsCache && itemsCache.length) {
+        renderItemsTable();
+        return true;
+      }
+      return false;
+    }
+
+    /* ---------- дата в тулбаре ---------- */
+
+    function onDateBlur(input) {
+      var v = input.value.trim();
+      if (v) {
+        var digits = v.replace(/\D/g, '');
+        if (digits.length === 8) {
+          input.value = digits.slice(0, 2) + '.' + digits.slice(2, 4) + '.' + digits.slice(4);
+        }
+      }
+      onDateChange();
+    }
+
+    var dateApplyTimer = null;
+
+    function onDateInput() {
+      if (dateApplyTimer) clearTimeout(dateApplyTimer);
+      dateApplyTimer = setTimeout(onDateChange, 250);
+    }
+
+    function onDateChange() {
+      var modeEl = document.getElementById('warehouseMode');
+      if (!modeEl) return;
+      var mode = modeEl.value;
+
+      if (mode === 'balances') {
+        startRefresh(true);
+      } else {
+        applyFilter();
+      }
+    }
+
+    /* ---------- Остатки ---------- */
+
+    function loadBalances(gen, options) {
+      options = options || {};
+      var guard = window.createTabGuard ? window.createTabGuard('warehouse') : null;
+      var dateIso = getDateIsoFromInput('warehouseDate');
+      if (!dateIso) {
+        var now = new Date();
+        dateIso = isoFromYMD(now.getFullYear(), now.getMonth(), now.getDate());
+      }
+
+      var needsRemote = options.forceServer || !(incomesCache && incomesCache.length) || !(expensesCache && expensesCache.length) || !(itemsCache && itemsCache.length);
+      balancesDateIso = dateIso;
+
+      if (!needsRemote) {
+        balancesCache = computeBalancesForDate(dateIso);
+        renderBalancesTable();
+        return Promise.resolve();
+      }
+
+      setDataAreaContent('Загрузка остатков...');
+
+      var promises = [];
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              itemsCache = r.data || [];
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'listItems', payload: {} });
+      }));
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              openingBalances = r.data || [];
+              openingBalancesDateIso = dateIso;
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'balancesByDate', payload: { date: dateIso } });
+      }));
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              incomesCache = enhanceIncomes(r.data || []);
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'listIncomes', payload: {} });
+      }));
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              expensesCache = enhanceExpenses(r.data || []);
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'listExpenses', payload: {} });
+      }));
+
+      return Promise.all(promises)
+        .then(function () {
+          if (gen !== refreshGeneration) return;
+          rebuildDerivedCaches();
+          balancesCache = computeBalancesForDate(dateIso);
+          if (guard && guard.isActive()) {
+            renderBalancesTable();
+          }
+        })
+        .catch(function () {
+          if (guard && guard.isActive()) {
+            setDataAreaContent('Ошибка: не удалось загрузить данные складских остатков');
+          }
+        });
+    }
+
+    function renderBalancesTable() {
+      var filter = getFilterText();
+      var header = 'Остаток на дату';
+      if (balancesDateIso) header = 'Остаток на ' + formatDateRu(balancesDateIso);
+
+      var cards = [];
+      var data = balancesCache.slice();
+      data.sort(function (a, b) {
+        var aq = Number(a.qty) || 0;
+        var bq = Number(b.qty) || 0;
+        if (balancesSortMode === 'missing') return aq - bq;
+        return bq - aq;
+      });
+      data.forEach(function (r) {
+        var name = r.item || '';
+        if (filter && r.itemLower.indexOf(filter) === -1) return;
+        var qty = (r.qty != null ? r.qty : '');
+        var positive = !isNaN(qty) ? Number(qty) > 0 : true;
+        cards.push(
+          '<div class="warehouse-stock-card" data-item="' + escapeHtml(name) + '" onclick="UIWarehouse.showMovesForItem(this.getAttribute(\'data-item\'))">' +
+            '<div class="warehouse-card-top">' +
+              '<span class="warehouse-dot ' + (positive ? '' : 'danger') + '"></span>' +
+              '<span style="color:#c1c9dd;font-weight:800;">›</span>' +
+            '</div>' +
+            '<div class="warehouse-card-title">' + escapeHtml(name) + '</div>' +
+            '<div class="warehouse-card-footer">' +
+              '<span class="warehouse-chip ' + (positive ? 'positive' : 'negative') + '">' + (positive ? 'В наличии' : 'Нет в наличии') + '</span>' +
+              '<span class="warehouse-qty ' + (positive ? '' : 'negative') + '">' + (qty !== '' ? qty : '—') + '</span>' +
+            '</div>' +
+          '</div>'
+        );
+      });
+
+      var html = '<div class="warehouse-page">' +
+        '<div class="warehouse-section">' +
+          '<div class="warehouse-section-header">' +
+            '<div>' +
+              '<div class="warehouse-section-title">Остатки</div>' +
+              '<div class="warehouse-section-subtitle">' + escapeHtml(header) + '</div>' +
+            '</div>' +
+          '</div>' +
+          (cards.length ? '<div class="warehouse-grid">' + cards.join('') + '</div>' : '<div class="warehouse-empty">Нет данных по остаткам.</div>') +
+        '</div>' +
+      '</div>';
+
+      setDataAreaContent(html);
+      forcedMoveFilter = '';
+    }
+
+    /* ---------- Приходы ---------- */
+
+    function loadIncomes(gen, options) {
+      options = options || {};
+      var guard = window.createTabGuard ? window.createTabGuard('warehouse') : null;
+      if (incomesCache && incomesCache.length && !options.forceServer) {
+        renderIncomesTable();
+        return Promise.resolve();
+      }
+
+      setDataAreaContent('Загрузка приходов...');
+
+      return new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (gen !== refreshGeneration) return resolve();
+            if (!r || !r.success) {
+              if (guard && guard.isActive()) {
+                setDataAreaContent('Ошибка: ' + (r && r.error ? r.error : 'неизвестная ошибка'));
+              }
+              return resolve();
+            }
+            incomesCache = enhanceIncomes(r.data || []);
+            if (guard && guard.isActive()) {
+              renderIncomesTable();
+            }
+            resolve();
+          })
+          .withFailureHandler(function (err) {
+            if (guard && guard.isActive()) {
+              setDataAreaContent('Ошибка: ' + (err || 'неизвестная ошибка'));
+            }
+            resolve();
+          })
+          .appBackend({
+            module: 'warehouse',
+            action: 'listIncomes',
+            payload: {}
+          });
+      });
+    }
+
+    function renderIncomesTable() {
+      var filter        = getFilterText();
+      var dateIsoFilter = getDateIsoFromInput('warehouseDate');
+
+      var data = incomesCache.slice();
+      data.sort(function (a, b) {
+        var da = a.sortKey;
+        var db = b.sortKey;
+        return incomesSortAsc ? (da - db) : (db - da);
+      });
+
+      var rowsHtml = '';
+      data.forEach(function (r) {
+        if (dateIsoFilter && r.dateIso !== dateIsoFilter) return;
+        if (filter && r.filterText.indexOf(filter) === -1) return;
+
+        var itemName = r.item || '';
+        var qtyVal = (r.qty != null ? r.qty : '');
+        var qtyText = qtyVal === '' ? '0' : qtyVal;
+        var statusLabel = r.inStock ? 'Прибыл на склад' : 'В пути';
+        var statusClass = r.inStock ? 'green' : 'yellow';
+        rowsHtml += '<tr class="data-row" data-id="' + (r.id || '') + '" data-item="' + escapeHtml(itemName) + '">' +
+          '<td>' + escapeHtml(itemName) + '</td>' +
+          '<td><span class="warehouse-pill green" style="text-transform:none;">' + escapeHtml(r.invoiceNumber || '') + '</span></td>' +
+          '<td onclick="UIWarehouse.toggleIncomesDateSort()" style="cursor:pointer;">' + escapeHtml(r.dateRu || formatDateRu(r.date)) + '</td>' +
+          '<td><span class="warehouse-qty-positive">+' + qtyText + '</span></td>' +
+          '<td>' + escapeHtml(r.unit || getUnitFromCache(itemName) || '') + '</td>' +
+          '<td><span class="warehouse-pill ' + statusClass + '">' + statusLabel + '</span></td>' +
+        '</tr>';
+      });
+
+      var html = '<div class="warehouse-page">' +
+        '<div class="warehouse-table-card">' +
+          '<div class="warehouse-table-header">' +
+            '<div class="warehouse-table-title">Приходы</div>' +
+            '<div class="warehouse-section-subtitle">Контроль поставок и прихода товара</div>' +
+          '</div>' +
+          '<table class="data-table warehouse-table warehouse-table-light">' +
+            '<tr>' +
+              '<th>Наименование</th>' +
+              '<th>Номер счета</th>' +
+              '<th onclick="UIWarehouse.toggleIncomesDateSort()" style="cursor:pointer;">Дата прихода ' + (incomesSortAsc ? '▲' : '▼') + '</th>' +
+              '<th>Количество</th>' +
+              '<th>Ед. изм.</th>' +
+              '<th>Статус</th>' +
+            '</tr>' +
+            rowsHtml +
+          '</table>' +
+        '</div>' +
+      '</div>';
+
+      setDataAreaContent(html);
+
+      var table = document.querySelector('#dataArea table');
+      if (!table) return;
+      makeTableResizable(table);
+
+      RowSelection.attach(table, {
+        rowSelector: 'tr.data-row',
+        idAttr: 'data-id',
+        onViewMoves: viewMovesForRows,
+        onEdit: editIncome,
+        onDelete: deleteIncomes
+      });
+    }
+
+    function toggleIncomesDateSort() {
+      incomesSortAsc = !incomesSortAsc;
+      renderIncomesTable();
+    }
+
+    /* ---------- Расходы ---------- */
+
+    function loadExpenses(gen, options) {
+      options = options || {};
+      var guard = window.createTabGuard ? window.createTabGuard('warehouse') : null;
+      if (expensesCache && expensesCache.length && !options.forceServer) {
+        renderExpensesTable();
+        return Promise.resolve();
+      }
+
+      setDataAreaContent('Загрузка расходов...');
+
+      return new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (gen !== refreshGeneration) return resolve();
+            if (!r || !r.success) {
+              if (guard && guard.isActive()) {
+                setDataAreaContent('Ошибка: ' + (r && r.error ? r.error : 'неизвестная ошибка'));
+              }
+              return resolve();
+            }
+            expensesCache = enhanceExpenses(r.data || []);
+            if (guard && guard.isActive()) {
+              renderExpensesTable();
+            }
+            resolve();
+          })
+          .withFailureHandler(function (err) {
+            if (guard && guard.isActive()) {
+              setDataAreaContent('Ошибка: ' + (err || 'неизвестная ошибка'));
+            }
+            resolve();
+          })
+          .appBackend({
+            module: 'warehouse',
+            action: 'listExpenses',
+            payload: {}
+          });
+      });
+    }
+
+    function renderExpensesTable() {
+      var filter        = getFilterText();
+      var dateIsoFilter = getDateIsoFromInput('warehouseDate');
+
+      var data = expensesCache.slice();
+      data.sort(function (a, b) {
+        var da = a.sortKey;
+        var db = b.sortKey;
+        return expensesSortAsc ? (da - db) : (db - da);
+      });
+
+      var rowsHtml = '';
+      data.forEach(function (r, idx) {
+        if (dateIsoFilter && r.dateIso !== dateIsoFilter) return;
+        if (filter && r.filterText.indexOf(filter) === -1) return;
+
+        var itemName = r.item || '';
+        var rowId = r.id || ('exp_' + idx);
+        var qtyVal = (r.qty != null ? r.qty : '');
+        rowsHtml += '<tr class="data-row" data-id="' + escapeHtml(rowId) + '" data-item="' + escapeHtml(itemName) + '">' +
+          '<td>' + escapeHtml(r.org || '') + '</td>' +
+          '<td onclick="UIWarehouse.toggleExpensesDateSort()" style="cursor:pointer;">' + escapeHtml(r.dateRu || formatDateRu(r.date)) + '</td>' +
+          '<td>' + escapeHtml(itemName) + '</td>' +
+          '<td><span class="warehouse-qty-negative">-' + (qtyVal !== '' ? qtyVal : '0') + '</span></td>' +
+        '</tr>';
+      });
+
+      var html = '<div class="warehouse-page">' +
+        '<div class="warehouse-table-card">' +
+          '<div class="warehouse-table-header">' +
+            '<div class="warehouse-table-title">Расходы</div>' +
+            '<div class="warehouse-section-subtitle">Учёт выдач и уменьшения остатков</div>' +
+          '</div>' +
+          '<table class="data-table warehouse-table warehouse-table-light">' +
+            '<tr>' +
+              '<th>Организация</th>' +
+              '<th onclick="UIWarehouse.toggleExpensesDateSort()" style="cursor:pointer;">Дата расхода ' + (expensesSortAsc ? '▲' : '▼') + '</th>' +
+              '<th>Товар</th>' +
+              '<th>Количество</th>' +
+            '</tr>' +
+            rowsHtml +
+          '</table>' +
+        '</div>' +
+      '</div>';
+
+      setDataAreaContent(html);
+
+      var table = document.querySelector('#dataArea table');
+      if (!table) return;
+      makeTableResizable(table);
+
+      RowSelection.attach(table, {
+        rowSelector: 'tr.data-row',
+        idAttr: 'data-id',
+        onViewMoves: viewMovesForRows,
+        onDelete: deleteExpenses
+      });
+    }
+
+    function toggleExpensesDateSort() {
+      expensesSortAsc = !expensesSortAsc;
+      renderExpensesTable();
+    }
+
+    function deleteExpenses(ids) {
+      if (!ids || !ids.length) return;
+      AppDialog.confirm(
+        'Удалить выбранные расходы (' + ids.length + ' шт.)?',
+        function () {
+          var left = ids.length;
+          ids.forEach(function (id) {
+            google.script.run
+              .withSuccessHandler(function (r) {
+                left--;
+                if (!r || !r.success) {
+                  AppDialog.alert('Не удалось удалить расход: ' + (r && r.error ? r.error : 'неизвестная ошибка'), 'Удаление расходов');
+                }
+                if (left === 0) startRefresh(true, { forceServer: true });
+              })
+              .appBackend({
+                module: 'warehouse',
+                action: 'deleteExpense',
+                payload: { id: id }
+              });
+          });
+        },
+        null,
+        'Удаление расходов'
+      );
+    }
+
+    function deleteSelectedExpenses() {
+      var rows = document.querySelectorAll('#dataArea tr.data-row-selected');
+      var ids = [];
+      Array.prototype.forEach.call(rows, function (r) {
+        var rowId = r.getAttribute('data-id');
+        if (rowId) ids.push(rowId);
+      });
+      if (!ids.length) {
+        AppDialog.alert('Выберите расход(ы) для удаления.', 'Удаление расходов');
+        return;
+      }
+      deleteExpenses(ids);
+    }
+
+    /* ---------- Товары ---------- */
+
+    function preloadItemsCache() {
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success) return;
+          itemsCache = r.data || [];
+          rebuildDerivedCaches();
+          applyFilter();
+        })
+        .appBackend({
+          module: 'warehouse',
+          action: 'listItems',
+          payload: {}
+        });
+    }
+
+    function preload() {
+      var today = new Date();
+      balancesDateIso = isoFromYMD(today.getFullYear(), today.getMonth(), today.getDate());
+
+      var promises = [];
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              itemsCache = r.data || [];
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'listItems', payload: {} });
+      }));
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              openingBalances = r.data || [];
+              openingBalancesDateIso = balancesDateIso;
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'balancesByDate', payload: { date: balancesDateIso } });
+      }));
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              incomesCache = enhanceIncomes(r.data || []);
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'listIncomes', payload: {} });
+      }));
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              expensesCache = enhanceExpenses(r.data || []);
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'listExpenses', payload: {} });
+      }));
+
+      promises.push(new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (r && r.success) {
+              movesCache = enhanceMoves(r.data || []);
+            }
+            resolve();
+          })
+          .withFailureHandler(function () { resolve(); })
+          .appBackend({ module: 'warehouse', action: 'listMoves', payload: {} });
+      }));
+
+      return Promise.all(promises)
+        .then(function () {
+          rebuildDerivedCaches();
+          balancesCache = computeBalancesForDate(balancesDateIso);
+          markReady();
+        })
+        .catch(function () {
+          markReady();
+        });
+    }
+
+    function loadItems(gen, options) {
+      options = options || {};
+      var guard = window.createTabGuard ? window.createTabGuard('warehouse') : null;
+      if (itemsCache && itemsCache.length && !options.forceServer) {
+        renderItemsTable();
+        return Promise.resolve();
+      }
+
+      setDataAreaContent('Загрузка товаров...');
+
+      return new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (gen !== refreshGeneration) return resolve();
+            if (!r || !r.success) {
+              if (guard && guard.isActive()) {
+                setDataAreaContent('Ошибка: ' + (r && r.error ? r.error : 'неизвестная ошибка'));
+              }
+              return resolve();
+            }
+            itemsCache = r.data || [];
+            rebuildDerivedCaches();
+            if (guard && guard.isActive()) {
+              renderItemsTable();
+            }
+            resolve();
+          })
+          .withFailureHandler(function (err) {
+            if (guard && guard.isActive()) {
+              setDataAreaContent('Ошибка: ' + (err || 'неизвестная ошибка'));
+            }
+            resolve();
+          })
+          .appBackend({
+            module: 'warehouse',
+            action: 'listItems',
+            payload: {}
+          });
+      });
+    }
+
+    function renderItemsTable() {
+      var filter = getFilterText();
+
+      var rowsHtml = '';
+      itemsCache.forEach(function (r) {
+        var name   = r.name || '';
+        var unit   = r.unit || '';
+        var active = (r.active !== false);
+
+        var text = (name + ' ' + unit).toLowerCase();
+        if (filter && text.indexOf(filter) === -1) return;
+
+        rowsHtml += '<tr class="data-row" data-id="' + (r.id || '') + '" data-item="' + escapeHtml(name) + '">' +
+          '<td>' + escapeHtml(name) + '</td>' +
+          '<td>' + escapeHtml(unit) + '</td>' +
+          '<td><span class="warehouse-pill ' + (active ? 'green' : 'red') + '">' + (active ? 'Активен' : 'Неактивен') + '</span></td>' +
+        '</tr>';
+      });
+
+      var html = '<div class="warehouse-page">' +
+        '<div class="warehouse-table-card">' +
+          '<div class="warehouse-table-header">' +
+            '<div class="warehouse-table-title">Товары</div>' +
+            '<div class="warehouse-section-subtitle">Справочник единиц и статусов</div>' +
+          '</div>' +
+          '<table class="data-table warehouse-table warehouse-table-light">' +
+            '<tr>' +
+              '<th>Наименование</th>' +
+              '<th>Ед. изм.</th>' +
+              '<th>Статус</th>' +
+            '</tr>' +
+            rowsHtml +
+          '</table>' +
+        '</div>' +
+      '</div>';
+
+      setDataAreaContent(html);
+
+      var table = document.querySelector('#dataArea table');
+      if (!table) return;
+      makeTableResizable(table);
+
+      RowSelection.attach(table, {
+        rowSelector: 'tr.data-row',
+        idAttr: 'data-id',
+        onViewMoves: viewMovesForRows,
+        onEdit: editItem,
+        onDelete: deleteItems
+      });
+    }
+
+    /* ---------- Движения ---------- */
+
+    function loadMoves(gen, options) {
+      options = options || {};
+      var guard = window.createTabGuard ? window.createTabGuard('warehouse') : null;
+      if (movesCache && movesCache.length && !options.forceServer) {
+        renderMovesTable();
+        return Promise.resolve();
+      }
+
+      setDataAreaContent('Загрузка движений склада...');
+
+      return new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (gen !== refreshGeneration) return resolve();
+            if (!r || !r.success) {
+              if (guard && guard.isActive()) {
+                setDataAreaContent('Ошибка: ' + (r && r.error ? r.error : 'неизвестная ошибка'));
+              }
+              return resolve();
+            }
+            movesCache = enhanceMoves(r.data || []);
+            if (guard && guard.isActive()) {
+              renderMovesTable();
+            }
+            resolve();
+          })
+          .withFailureHandler(function (err) {
+            if (guard && guard.isActive()) {
+              setDataAreaContent('Ошибка: ' + (err || 'неизвестная ошибка'));
+            }
+            resolve();
+          })
+          .appBackend({
+            module: 'warehouse',
+            action: 'listMoves',
+            payload: {}
+          });
+      });
+    }
+
+    function renderMovesTable() {
+      var filterInput = document.getElementById('warehouseFilter');
+      var currentFilterVal = filterInput ? (filterInput.value || '').trim() : '';
+      if (forcedMoveFilter) {
+        if (!currentFilterVal || currentFilterVal === forcedMoveFilter) {
+          if (filterInput) filterInput.value = forcedMoveFilter;
+          currentFilterVal = forcedMoveFilter;
+        }
+      }
+      var filter        = currentFilterVal.toLowerCase();
+      var opFilter      = getOperationFilter();
+      var dateIsoFilter = getDateIsoFromInput('warehouseDate');
+
+      var data = movesCache.slice();
+      data.sort(function (a, b) {
+        var da = a.sortKey;
+        var db = b.sortKey;
+        return movesSortAsc ? (da - db) : (db - da);
+      });
+
+      var rowsHtml = '';
+      var i = 0;
+      data.forEach(function (r) {
+        if (dateIsoFilter && r.dateIso !== dateIsoFilter) return;
+        if (opFilter !== 'all' && r.opCode !== opFilter) return;
+        if (filter && r.filterText.indexOf(filter) === -1) return;
+
+        var qtyVal = (r.qty != null ? r.qty : '');
+        var opClass = r.opCode === 'in' ? 'green' : (r.opCode === 'out' ? 'yellow' : 'red');
+        var qtyClass = r.opCode === 'out' ? 'warehouse-qty-negative' : 'warehouse-qty-positive';
+        var qtyPrefix = r.opCode === 'out' ? '-' : '+';
+        rowsHtml += '<tr class="data-row" data-id="move_' + i + '" data-item="' + escapeHtml(r.item || '') + '">' +
+          '<td onclick="UIWarehouse.toggleMovesDateSort()" style="cursor:pointer;">' + escapeHtml(r.dateRu || formatDateRu(r.date)) + '</td>' +
+          '<td>' + escapeHtml(r.contractNumber || '') + '</td>' +
+          '<td>' + escapeHtml(r.item || '') + '</td>' +
+          '<td><span class="warehouse-pill ' + opClass + '">' + escapeHtml(r.operationType || r.type || '') + '</span></td>' +
+          '<td><span class="' + qtyClass + '">' + qtyPrefix + (qtyVal !== '' ? qtyVal : '0') + '</span></td>' +
+        '</tr>';
+        i++;
+      });
+
+      var html = '<div class="warehouse-page">' +
+        '<div class="warehouse-table-card">' +
+          '<div class="warehouse-table-header">' +
+            '<div class="warehouse-table-title">Движения склада</div>' +
+            '<div class="warehouse-section-subtitle">История операций по всем товарам</div>' +
+          '</div>' +
+          '<table class="data-table warehouse-table warehouse-table-light">' +
+            '<tr>' +
+              '<th onclick="UIWarehouse.toggleMovesDateSort()" style="cursor:pointer;">Дата движения ' + (movesSortAsc ? '▲' : '▼') + '</th>' +
+              '<th>Номер контракта/счета</th>' +
+              '<th>Товар</th>' +
+              '<th>Тип операции</th>' +
+              '<th>Количество</th>' +
+            '</tr>' +
+            rowsHtml +
+          '</table>' +
+        '</div>' +
+      '</div>';
+
+      setDataAreaContent(html);
+
+      var table = document.querySelector('#dataArea table');
+      if (!table) return;
+      makeTableResizable(table);
+
+      RowSelection.attach(table, {
+        rowSelector: 'tr.data-row',
+        idAttr: 'data-id',
+        onViewMoves: viewMovesForRows
+      });
+    }
+
+    function toggleMovesDateSort() {
+      movesSortAsc = !movesSortAsc;
+      renderMovesTable();
+    }
+
+    /* ---------- Фильтры ---------- */
+    function buildModeTabs() {
+      var modes = [
+        { value: 'balances', label: 'Остатки' },
+        { value: 'incomes', label: 'Приходы' },
+        { value: 'expenses', label: 'Расходы' },
+        { value: 'moves', label: 'Движения' },
+        { value: 'items', label: 'Товары' }
+      ];
+      return modes.map(function (m) {
+        return '<button class="warehouse-tab" data-mode="' + m.value + '" onclick="UIWarehouse.switchMode(\'' + m.value + '\')">' + m.label + '</button>';
+      }).join('');
+    }
+
+    function switchMode(mode) {
+      var modeEl = document.getElementById('warehouseMode');
+      if (modeEl) modeEl.value = mode;
+      updateTabActiveState(mode);
+      startRefresh(true, { modeOverride: mode });
+    }
+
+    function updateTabActiveState(activeMode) {
+      var tabs = document.querySelectorAll('.warehouse-tab');
+      Array.prototype.forEach.call(tabs, function (tab) {
+        var mode = tab.getAttribute('data-mode');
+        if (mode === activeMode) tab.classList.add('warehouse-tab-active');
+        else tab.classList.remove('warehouse-tab-active');
+      });
+    }
+
+    function getFilterText() {
+      var f = document.getElementById('warehouseFilter');
+      return f ? f.value.trim().toLowerCase() : '';
+    }
+
+    function getOperationFilter() {
+      var sel = document.getElementById('warehouseOpType');
+      return sel ? sel.value : 'all';
+    }
+
+    function setBalancesSort(mode) {
+      balancesSortMode = mode;
+      updateBalancesSortControls();
+      var modeEl = document.getElementById('warehouseMode');
+      if (modeEl && modeEl.value === 'balances') renderBalancesTable();
+    }
+
+    function updateBalancesSortControls() {
+      var availableBtn = document.getElementById('warehouseSortAvailable');
+      var missingBtn = document.getElementById('warehouseSortMissing');
+      if (availableBtn) availableBtn.classList.toggle('active', balancesSortMode === 'available');
+      if (missingBtn) missingBtn.classList.toggle('active', balancesSortMode === 'missing');
+    }
+
+    // ✅ Единая точка применения фильтрации
+    function applyFilter() {
+      var modeEl = document.getElementById('warehouseMode');
+      if (!modeEl) return;
+      var mode = modeEl.value;
+
+      if (mode === 'balances')      renderBalancesTable();
+      else if (mode === 'incomes')  renderIncomesTable();
+      else if (mode === 'expenses') renderExpensesTable();
+      else if (mode === 'moves')    renderMovesTable();
+      else if (mode === 'items')    renderItemsTable();
+    }
+
+    function preloadAllModes() {
+      var modeEl = document.getElementById('warehouseMode');
+      if (!modeEl) return Promise.resolve();
+
+      var dateInput   = document.getElementById('warehouseDate');
+      var filterInput = document.getElementById('warehouseFilter');
+      var opSel       = document.getElementById('warehouseOpType');
+      var savedMode   = modeEl.value;
+      var savedDate   = dateInput ? dateInput.value : '';
+
+      if (filterInput) filterInput.value = '';
+      if (opSel) opSel.value = 'all';
+      forcedMoveFilter = '';
+
+      var modes = ['balances', 'incomes', 'expenses', 'moves', 'items'];
+      var chain = Promise.resolve();
+
+      modes.forEach(function (mode) {
+        chain = chain.then(function () {
+          return startRefresh(true, { modeOverride: mode, forceServer: true });
+        });
+      });
+
+      return chain
+        .then(function () {
+          if (modeEl) modeEl.value = savedMode;
+          if (dateInput) dateInput.value = savedDate;
+          lastMode = null;
+          return startRefresh(true, { modeOverride: savedMode, keepDate: true });
+        })
+        .then(function () {
+          markReady();
+        })
+        .catch(function () {
+          markReady();
+        });
+    }
+
+    /* ---------- Переход к движениям ---------- */
+
+    function viewMovesForRows(ids, rows) {
+      if (!ids || !ids.length) return;
+      var selectedId = ids[0];
+      var rowEl = null;
+      if (rows && rows.length) {
+        rowEl = rows.find(function (r) {
+          return r && r.getAttribute('data-id') === selectedId;
+        }) || null;
+      }
+      if (!rowEl) {
+        rowEl = document.querySelector('.data-row[data-id="' + selectedId + '"]');
+      }
+      var itemName = rowEl ? (rowEl.getAttribute('data-item') || rowEl.cells[0]?.textContent || '').trim() : '';
+      if (!itemName) return AppDialog.alert('Не удалось определить наименование товара.', 'Движения товара');
+      showMovesForItem(itemName);
+    }
+
+    function showMovesForItem(itemName) {
+      var modeEl = document.getElementById('warehouseMode');
+      if (!modeEl) return;
+      modeEl.value = 'moves';
+      forcedMoveFilter = itemName || '';
+      var filterInput = document.getElementById('warehouseFilter');
+      if (filterInput) filterInput.value = itemName;
+      var dateInput = document.getElementById('warehouseDate');
+      if (dateInput) dateInput.value = '';
+      var opSel = document.getElementById('warehouseOpType');
+      if (opSel) opSel.value = 'all';
+      startRefresh(true);
+    }
+
+    /* ---------- Формы: Приходы и Товары ---------- */
+
+    function initIncomeItemCombo() {
+      var input = document.getElementById('incomeItem');
+      var list  = document.getElementById('incomeItemList');
+      if (!input || !list) return;
+
+      list.style.display = 'none';
+      if (!document.body.dataset.incomeComboBound) {
+        document.body.dataset.incomeComboBound = '1';
+        document.addEventListener('click', function (e) {
+          var wrapper = document.querySelector('.combo-wrapper');
+          if (!wrapper || !wrapper.contains(e.target)) {
+            var lst = document.getElementById('incomeItemList');
+            if (lst) lst.style.display = 'none';
+          }
+        });
+      }
+      if (!input.dataset.comboBound) {
+        input.dataset.comboBound = '1';
+        input.addEventListener('click', function () {
+          onIncomeItemInput();
+        });
+      }
+      input.addEventListener('input', function () {
+        updateIncomeUnitDisplay(this.value.trim());
+      });
+    }
+
+    function onIncomeItemInput() {
+      var input = document.getElementById('incomeItem');
+      var list  = document.getElementById('incomeItemList');
+      if (!input || !list) return;
+
+      var q = input.value.trim().toLowerCase();
+      var items = itemsCache || [];
+      if (!items.length) {
+        list.innerHTML = '<div class="combo-item">Нет товаров в справочнике</div>';
+        list.style.display = 'block';
+        return;
+      }
+
+      var html = '';
+      var shown = 0;
+      items.forEach(function (it) {
+        if (!it || !it.name) return;
+        var text = (it.name + ' ' + (it.unit || '')).toLowerCase();
+        if (q && text.indexOf(q) === -1) return;
+        if (shown >= 50) return;
+        var isSelected = normalizeItemName(it.name).toLowerCase() === normalizeItemName(input.value).toLowerCase();
+        html += '<div class="combo-item' + (isSelected ? ' selected' : '') + '" data-name="' + escapeHtml(it.name) + '">' +
+                  escapeHtml(it.name) +
+                '</div>';
+        shown++;
+      });
+
+      if (!html) html = '<div class="combo-item">Ничего не найдено</div>';
+
+      list.innerHTML = html;
+      list.style.display = 'block';
+      if (window.ensureOverlayVisible) window.ensureOverlayVisible(list, input);
+
+      Array.prototype.forEach.call(
+        list.querySelectorAll('.combo-item'),
+        function (el) {
+          el.onclick = function () {
+            var name = el.getAttribute('data-name');
+            input.value = name || '';
+            list.style.display = 'none';
+            updateIncomeUnitDisplay(name || '');
+          };
+        }
+      );
+    }
+
+    function updateIncomeUnitDisplay(name) {
+      var unit = getUnitFromCache(name) || '';
+      var unitEl = document.getElementById('incomeUnitText');
+      var inputEl = document.getElementById('incomeUnitInput');
+      var known = isKnownItemName(name);
+
+      if (unitEl) {
+        unitEl.textContent = unit ? ('Ед. изм.: ' + unit) : (known ? 'Ед. изм.: —' : 'Товар не найден в реестре');
+      }
+
+      if (inputEl) {
+        inputEl.value = unit || '';
+        inputEl.readOnly = true;
+        inputEl.placeholder = 'Из реестра';
+      }
+    }
+
+    function showIncomeForm(mode, income) {
+      var dateVal = formatDateRu(income.date);
+      var title   = (mode === 'create') ? 'Новый приход' : 'Редактирование прихода';
+
+      var html = `
+        <div class="warehouse-page">
+          <div id="incomeEditForm" class="warehouse-form-card">
+            <div class="warehouse-form-header">
+              <div>
+                <div class="warehouse-form-title">${title}</div>
+                <div class="warehouse-form-subtitle">Заполните данные о поступлении товара</div>
+              </div>
+              <button class="warehouse-modal-close" onclick="UIWarehouse.cancelIncomeEdit()">×</button>
+            </div>
+            <div class="warehouse-form-grid income-grid">
+              <div class="warehouse-field full">
+                <div class="warehouse-label">Товар<span class="required-star">*</span></div>
+                <div class="combo-wrapper" style="position: relative;">
+                  <input id="incomeItem" class="warehouse-input" type="text" value="${escapeHtml(income.item || '')}" placeholder="Начните вводить название товара или артикул..." autocomplete="off" oninput="UIWarehouse.onIncomeItemInput()">
+                  <div id="incomeItemList" class="warehouse-combo-list" style="display:none;"></div>
+                </div>
+              </div>
+              <div class="warehouse-field">
+                <div class="warehouse-label">Номер счета / накладной</div>
+                <input id="incomeInvoice" class="warehouse-input" type="text" value="${escapeHtml(income.invoiceNumber || '')}" placeholder="Например: INV-00123">
+              </div>
+              <div class="warehouse-field">
+                <div class="warehouse-label">Дата прихода<span class="required-star">*</span></div>
+                <input id="incomeDate" class="warehouse-input" type="text" value="${dateVal}" placeholder="дд.мм.гггг">
+              </div>
+              <div class="warehouse-field">
+                <div class="warehouse-label">Количество<span class="required-star">*</span></div>
+                <input id="incomeQty" class="warehouse-input" type="number" value="${income.qty != null ? income.qty : ''}" placeholder="0.00">
+              </div>
+              <div class="warehouse-field">
+                <div class="warehouse-label">Ед. изм.</div>
+                <input id="incomeUnitInput" class="warehouse-input" type="text" value="${escapeHtml(income.unit || '')}" placeholder="—" autocomplete="off">
+                <div id="incomeUnitText" class="warehouse-note">Из реестра</div>
+              </div>
+            </div>
+            <div class="warehouse-toggle-row">
+              <div class="warehouse-toggle-text">
+                <div class="warehouse-label">Товар на складе</div>
+                <div class="warehouse-note">Отметьте, если товар фактически размещен на полке и готов к отгрузке</div>
+              </div>
+              <label class="warehouse-toggle">
+                <input id="incomeInStock" type="checkbox" ${income.inStock !== false ? 'checked' : ''}>
+                <span class="warehouse-toggle-slider"></span>
+              </label>
+              <span id="incomeStockStatus" class="warehouse-status-pill"></span>
+            </div>
+            <div class="warehouse-form-actions">
+              <button class="warehouse-ghost-btn" onclick="UIWarehouse.cancelIncomeEdit()">Отмена</button>
+              <button class="warehouse-primary-btn" onclick="UIWarehouse.saveIncome('${mode}', '${income.id || ''}')">Сохранить приход</button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      setDataAreaContent(html);
+
+      if (typeof window.attachDateInput === 'function') {
+        window.attachDateInput('incomeDate');
+      }
+
+      initIncomeItemCombo();
+      updateIncomeUnitDisplay(income.item || '');
+      bindIncomeStockToggle();
+    }
+
+    function bindIncomeStockToggle() {
+      var toggle = document.getElementById('incomeInStock');
+      if (toggle && !toggle.dataset.bound) {
+        toggle.dataset.bound = '1';
+        toggle.addEventListener('change', updateIncomeStockStatus);
+      }
+      updateIncomeStockStatus();
+    }
+
+    function updateIncomeStockStatus() {
+      var toggle = document.getElementById('incomeInStock');
+      var status = document.getElementById('incomeStockStatus');
+      if (!toggle || !status) return;
+      if (toggle.checked) {
+        status.textContent = 'Прибыл на склад';
+        status.className = 'warehouse-status-pill ready';
+      } else {
+        status.textContent = 'В пути';
+        status.className = 'warehouse-status-pill transit';
+      }
+    }
+
+    function addIncome() {
+      showIncomeForm('create', {
+        id: '',
+        item: '',
+        invoiceNumber: '',
+        date: new Date().toISOString().slice(0, 10),
+        qty: '',
+        inStock: true
+      });
+    }
+
+    function editIncome(id) {
+      if (!id) return;
+      var found = incomesCache.find(x => x.id === id);
+      if (found) {
+        showIncomeForm('edit', found);
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success || !r.data) {
+            AppDialog.alert('Не удалось получить данные прихода.', 'Ошибка');
+            return;
+          }
+          showIncomeForm('edit', r.data);
+        })
+        .appBackend({
+          module: 'warehouse',
+          action: 'getIncomeById',
+          payload: { id: id }
+        });
+    }
+
+    function deleteIncomes(ids) {
+      if (!ids || !ids.length) return;
+      AppDialog.confirm(
+        'Удалить выбранные приходы (' + ids.length + ' шт.)?',
+        function () {
+          var left = ids.length;
+          ids.forEach(function (id) {
+            google.script.run
+              .withSuccessHandler(function () {
+                left--;
+                if (left === 0) startRefresh(true, { forceServer: true });
+              })
+              .appBackend({
+                module: 'warehouse',
+                action: 'deleteIncome',
+                payload: { id: id }
+              });
+          });
+        },
+        null,
+        'Удаление приходов'
+      );
+    }
+
+    function saveIncome(mode, id) {
+      var inputItem = document.getElementById('incomeItem');
+      var inputQty  = document.getElementById('incomeQty');
+      if (!inputItem || !inputQty) return;
+
+      var itemName = normalizeItemName(inputItem.value);
+      var qtyStr   = (inputQty.value || '').trim();
+
+      var payload = {
+        id: id || '',
+        item: itemName,
+        invoiceNumber: (document.getElementById('incomeInvoice').value || '').trim(),
+        date: parseRuDateToIso(document.getElementById('incomeDate').value),
+        qty: qtyStr,
+        inStock: !!(document.getElementById('incomeInStock') && document.getElementById('incomeInStock').checked)
+      };
+
+      if (!payload.item) return AppDialog.alert('Выберите товар из списка товаров.', 'Сохранение прихода');
+      if (!payload.qty) return AppDialog.alert('Введите количество.', 'Сохранение прихода');
+
+      var exists = isKnownItemName(payload.item);
+      payload.unit = exists ? getUnitFromCache(itemName) : '';
+
+      if (!exists) {
+        return AppDialog.alert('Такого товара нет в реестре. Сначала добавьте его во вкладке "Товары".', 'Сохранение прихода');
+      }
+
+      var action = (mode === 'create') ? 'createIncome' : 'updateIncome';
+
+      function actuallySave() {
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (!r || !r.success) {
+              AppDialog.alert('Ошибка сохранения: ' + (r && r.error ? r.error : 'неизвестная ошибка'), 'Сохранение прихода');
+              return;
+            }
+            startRefresh(true, { forceServer: true });
+          })
+          .appBackend({
+            module: 'warehouse',
+            action: action,
+            payload: payload
+          });
+      }
+
+      actuallySave();
+    }
+
+    function cancelIncomeEdit() {
+      startRefresh(true);
+    }
+
+    function addItem() {
+      showItemForm('create', { id: '', name: '', unit: '', active: true });
+    }
+
+    function editItem(id) {
+      if (!id) return;
+      var found = itemsCache.find(x => x.id === id);
+      if (found) {
+        showItemForm('edit', found);
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success || !r.data) {
+            AppDialog.alert('Не удалось получить данные товара.', 'Ошибка');
+            return;
+          }
+          showItemForm('edit', r.data);
+        })
+        .appBackend({
+          module: 'warehouse',
+          action: 'getItemById',
+          payload: { id: id }
+        });
+    }
+
+    function deleteItems(ids) {
+      if (!ids || !ids.length) return;
+      AppDialog.confirm(
+        'Удалить выбранные товары (' + ids.length + ' шт.)? Будьте осторожны: товар нельзя удалить, если по нему есть приходы или движения.',
+        function () {
+          var left = ids.length;
+          ids.forEach(function (id) {
+            google.script.run
+              .withSuccessHandler(function (r) {
+                if (!r || !r.success) {
+                  AppDialog.alert('Ошибка удаления товара: ' + (r && r.error ? r.error : 'неизвестная ошибка'), 'Удаление товаров');
+                }
+                left--;
+                if (left === 0) {
+                  preloadItemsCache();
+                  startRefresh(true, { forceServer: true });
+                }
+              })
+              .appBackend({
+                module: 'warehouse',
+                action: 'deleteItem',
+                payload: { id: id }
+              });
+          });
+        },
+        null,
+        'Удаление товаров'
+      );
+    }
+
+    function showItemForm(mode, item) {
+      var title = (mode === 'create') ? 'Добавление товара' : 'Редактирование товара';
+      var html = `
+        <div class="warehouse-page">
+          <div id="itemEditForm" class="warehouse-form-card">
+            <div class="warehouse-form-header">
+              <div class="warehouse-form-title">${title}</div>
+              <button class="warehouse-modal-close" onclick="UIWarehouse.cancelItemEdit()">×</button>
+            </div>
+            <div class="warehouse-form-grid">
+              <div class="warehouse-field">
+                <div class="warehouse-label">Наименование</div>
+                <input id="itemName" class="warehouse-input" type="text" value="${escapeHtml(item.name || '')}" placeholder="Например: Тест-полоски Easy Touch">
+              </div>
+              <div class="warehouse-field">
+                <div class="warehouse-label">Ед. изм.</div>
+                <input id="itemUnit" class="warehouse-input" type="text" value="${escapeHtml(item.unit || '')}" placeholder="шт, кг, м, л...">
+              </div>
+            </div>
+            <div class="warehouse-checkbox-row">
+              <input id="itemActive" type="checkbox" ${item.active ? 'checked' : ''} style="width:18px;height:18px;accent-color:#6f5bff;">
+              <label for="itemActive" style="font-weight:700;color:#0f1d3a;">Активен в справочнике</label>
+            </div>
+            <div class="warehouse-form-actions">
+              <button class="warehouse-ghost-btn" onclick="UIWarehouse.cancelItemEdit()">Отмена</button>
+              <button class="warehouse-primary-btn" onclick="UIWarehouse.saveItem('${mode}', '${item.id || ''}')">Сохранить</button>
+            </div>
+          </div>
+        </div>
+      `;
+      setDataAreaContent(html);
+    }
+
+    function saveItem(mode, id) {
+      var name = (document.getElementById('itemName').value || '').trim();
+      var unit = (document.getElementById('itemUnit').value || '').trim();
+      var active = document.getElementById('itemActive').checked;
+      if (!name) return AppDialog.alert('Наименование товара обязательно.', 'Сохранение товара');
+
+      var payload = { id: id || '', name: name, unit: unit, active: active };
+      var action = (mode === 'create') ? 'createItem' : 'updateItem';
+
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success) {
+            AppDialog.alert('Ошибка сохранения товара: ' + (r && r.error ? r.error : 'неизвестная ошибка'), 'Сохранение товара');
+            return;
+          }
+          preloadItemsCache();
+          startRefresh(true, { forceServer: true });
+        })
+        .appBackend({
+          module: 'warehouse',
+          action: action,
+          payload: payload
+        });
+    }
+
+    function cancelItemEdit() {
+      startRefresh(true);
+    }
+
+    /* ---------- Публичный интерфейс ---------- */
+
+    return {
+      load: load,
+      onResume: function () {
+        if (!renderCurrentModeFromCache()) {
+          startRefresh(true, { forceServer: true });
+        }
+      },
+      manualRefresh: manualRefresh,
+      applyFilter: applyFilter,
+      onDateInput: onDateInput,
+      onDateChange: onDateChange,
+      toggleMovesDateSort: toggleMovesDateSort,
+      toggleIncomesDateSort: toggleIncomesDateSort,
+      toggleExpensesDateSort: toggleExpensesDateSort,
+      addIncome: addIncome,
+      saveIncome: saveIncome,
+      cancelIncomeEdit: cancelIncomeEdit,
+      deleteSelectedExpenses: deleteSelectedExpenses,
+      addItem: addItem,
+      saveItem: saveItem,
+      cancelItemEdit: cancelItemEdit,
+      onDateBlur: onDateBlur,
+      showMovesForItem: showMovesForItem,
+      switchMode: switchMode,
+      preloadAllModes: preloadAllModes,
+      preload: preload
+    };
+
+  })();
+</script>

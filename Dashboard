@@ -1,0 +1,261 @@
+// Dashboard.gs
+var Dashboard = (function () {
+  function handle(request) {
+    var p = request.payload || {};
+    switch (request.action) {
+      case 'overview':
+        return { success: true, data: buildOverview(p) };
+
+      // FIX: теперь формат всегда { files: [...] } (как в overview)
+      case 'driveList':
+        return { success: true, data: { files: listDriveFiles() } };
+
+      case 'uploadDriveFile':
+        return { success: true, data: uploadDriveFile(p) };
+
+      // FIX: после удаления тоже возвращаем { files: [...] }
+      case 'deleteDriveFile':
+        deleteDriveFile(p && p.id);
+        return { success: true, data: { files: listDriveFiles() } };
+
+      case 'processContracts':
+        return { success: true, data: processContracts(p || {}) };
+
+      default:
+        throw new Error('Unknown dashboard action: ' + request.action);
+    }
+  }
+
+  function normalizeDate(val) {
+    if (!val) return null;
+    if (val instanceof Date && !isNaN(val)) {
+      return new Date(val.getFullYear(), val.getMonth(), val.getDate());
+    }
+    if (typeof val === 'string') {
+      var iso = /^\d{4}-\d{2}-\d{2}$/.exec(val.trim());
+      if (iso) return new Date(val + 'T00:00:00');
+    }
+    var d = new Date(val);
+    if (isNaN(d)) return null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+
+  function formatIso(date) {
+    if (!date) return '';
+    var y = date.getFullYear();
+    var m = ('0' + (date.getMonth() + 1)).slice(-2);
+    var d = ('0' + date.getDate()).slice(-2);
+    return y + '-' + m + '-' + d;
+  }
+
+  function getWeekStart(d) {
+    var day = d.getDay();
+    var diff = (day === 0 ? -6 : 1 - day);
+    var start = new Date(d);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(d.getDate() + diff);
+    return start;
+  }
+
+  function getWeekEnd(d) {
+    var start = getWeekStart(d);
+    var end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return end;
+  }
+
+  function calcStatus(c) {
+    var qty = Number(c.qty) || 0;
+    var delivered = Number(c.delivered) || 0;
+    var hasFact = !!c.dateFact;
+    var docsSent = !!c.docsSent;
+
+    if (c.forceDone) return 'done';
+    if (hasFact) return 'done';
+    if (qty > 0 && qty === delivered && docsSent) return 'done';
+    return 'inwork';
+  }
+
+  function buildOverview(p) {
+    var today = new Date();
+    var periodStart = normalizeDate(p.fromDate);
+    var periodEnd = normalizeDate(p.toDate);
+
+    if (!periodStart && periodEnd) {
+      periodStart = getWeekStart(periodEnd);
+    }
+    if (!periodEnd && periodStart) {
+      periodEnd = getWeekEnd(periodStart);
+    }
+    if (!periodStart) periodStart = getWeekStart(today);
+    if (!periodEnd) periodEnd = getWeekEnd(periodStart);
+
+    var contractsRes = Contracts.handle({ action: 'list', payload: {} });
+    if (!contractsRes || !contractsRes.success) {
+      throw new Error('Не удалось получить список контрактов');
+    }
+    var contracts = contractsRes.data || [];
+
+    var doneCount = 0;
+    var inWorkCount = 0;
+    var plans = [];
+
+    contracts.forEach(function (c) {
+      var status = calcStatus(c);
+      if (status === 'done') doneCount++; else inWorkCount++;
+
+      var items = extractContractItems_(c);
+      items.forEach(function (it) {
+        var planQty = Number(it.planQty) || 0;
+        var planDate = normalizeDate(it.planDate || c.planDate);
+        if (planQty > 0 && planDate) {
+          if (planDate.getTime() >= periodStart.getTime() && planDate.getTime() <= periodEnd.getTime()) {
+            plans.push({
+              contractId: c.id || '',
+              contractNumber: c.number || '',
+              org: c.org || '',
+              date: formatIso(planDate),
+              item: it.item || c.item || '',
+              qty: planQty
+            });
+          }
+        }
+      });
+    });
+
+    plans.sort(function (a, b) {
+      var ad = normalizeDate(a.date);
+      var bd = normalizeDate(b.date);
+      var diff = (ad && bd) ? ad.getTime() - bd.getTime() : 0;
+      if (diff !== 0) return diff;
+      var ao = (a.org || '').toLowerCase();
+      var bo = (b.org || '').toLowerCase();
+      if (ao < bo) return -1; if (ao > bo) return 1;
+      var ai = (a.item || '').toLowerCase();
+      var bi = (b.item || '').toLowerCase();
+      if (ai < bi) return -1; if (ai > bi) return 1;
+      return 0;
+    });
+
+    var balancesRes = Warehouse.handle({ action: 'balancesByDate', payload: { date: formatIso(today) } });
+    if (!balancesRes || !balancesRes.success) {
+      throw new Error('Не удалось рассчитать остатки');
+    }
+    var balances = (balancesRes.data || []).filter(function (b) {
+      return (Number(b.qty) || 0) > 0;
+    });
+
+    return {
+      counts: { done: doneCount, inwork: inWorkCount },
+      plans: plans,
+      balances: balances,
+
+      // формат уже правильный
+      drive: { files: listDriveFiles() },
+
+      period: { from: formatIso(periodStart), to: formatIso(periodEnd) }
+    };
+  }
+
+  function extractContractItems_(c) {
+    var items = (c && Array.isArray(c.items) && c.items.length) ? c.items : [];
+    if (!items.length) {
+      items = [{
+        item: c.item || '',
+        qty: c.qty,
+        planQty: c.planQty,
+        planDate: c.planDate,
+        dateFact: c.dateFact,
+        delivered: c.delivered
+      }];
+    }
+    return items;
+  }
+
+  function listDriveFiles() {
+    var folderId = Core.config.drive && Core.config.drive.contractsFolderId;
+    if (!folderId) return [];
+
+    var folder;
+    try {
+      folder = DriveApp.getFolderById(folderId);
+    } catch (e) {
+      Core.error(e);
+      return [];
+    }
+
+    var filesIter = folder.getFiles();
+    var files = [];
+    while (filesIter.hasNext()) {
+      var f = filesIter.next();
+      files.push({
+        id: f.getId(),
+        name: f.getName(),
+        url: f.getUrl(),
+        created: formatIso(f.getDateCreated()),
+        updated: formatIso(f.getLastUpdated())
+      });
+    }
+
+    files.sort(function (a, b) {
+      var ad = normalizeDate(b.updated || b.created || '');
+      var bd = normalizeDate(a.updated || a.created || '');
+      var av = ad ? ad.getTime() : 0;
+      var bv = bd ? bd.getTime() : 0;
+      return av - bv;
+    });
+
+    return files;
+  }
+
+  function uploadDriveFile(p) {
+    if (!p || !p.content || !p.name) {
+      throw new Error('Не передано содержимое файла или имя');
+    }
+    var folderId = Core.config.drive && Core.config.drive.contractsFolderId;
+    if (!folderId) throw new Error('Не настроена папка для контрактов');
+
+    var folder = DriveApp.getFolderById(folderId);
+    var bytes = Utilities.base64Decode(p.content);
+    var blob = Utilities.newBlob(bytes, p.mimeType || 'application/octet-stream', p.name);
+    var file = folder.createFile(blob);
+    return {
+      id: file.getId(),
+      name: file.getName(),
+      url: file.getUrl(),
+      created: formatIso(file.getDateCreated()),
+      updated: formatIso(file.getLastUpdated())
+    };
+  }
+
+  function deleteDriveFile(fileId) {
+    if (!fileId) throw new Error('Не передан ID файла для удаления');
+    var folderId = Core.config.drive && Core.config.drive.contractsFolderId;
+    if (!folderId) throw new Error('Не настроена папка для контрактов');
+
+    var file;
+    try {
+      file = DriveApp.getFileById(fileId);
+    } catch (e) {
+      Core.error(e);
+      throw new Error('Файл не найден');
+    }
+
+    var parents = file.getParents();
+    var inTargetFolder = false;
+    while (parents.hasNext()) {
+      if (parents.next().getId() === folderId) {
+        inTargetFolder = true;
+        break;
+      }
+    }
+
+    if (!inTargetFolder) {
+      throw new Error('Удаление запрещено для этого файла');
+    }
+
+    file.setTrashed(true);
+  }
+
+  return { handle: handle };
+})();

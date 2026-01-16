@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Личный кабинет</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;500;700&family=Playfair+Display:wght@600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth_pages.css') }}" />
+  </head>
+  <body class="auth-page">
+    <div class="auth-card">
+      <div class="profile-header">
+        <h1>Личный кабинет</h1>
+        <a href="{{ url_for('app_index') }}">В приложение</a>
+      </div>
+      <form method="post" class="auth-form">
+        <label>
+          ФИО
+          <input type="text" name="full_name" value="{{ user.profile.full_name or '' }}" />
+        </label>
+        <label>
+          Возраст
+          <input type="number" name="age" min="0" value="{{ user.profile.age or '' }}" />
+        </label>
+        <label>
+          Род деятельности
+          <input type="text" name="activity" value="{{ user.profile.activity or '' }}" />
+        </label>
+        <button class="primary-btn" type="submit">Сохранить</button>
+      </form>
+
+      <div class="danger-zone">
+        <h2>Danger Zone</h2>
+        <p>Удаление аккаунта необратимо. Подтверждение по OTP.</p>
+        <form method="post" action="{{ url_for('request_delete_account') }}">
+          <button class="danger-btn" type="submit">Удалить аккаунт</button>
+        </form>
+      </div>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-stack">
+            {% for category, message in messages %}
+              <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+    </div>
+  </body>
+</html>

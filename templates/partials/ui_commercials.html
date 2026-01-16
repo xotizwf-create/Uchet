@@ -1,0 +1,2196 @@
+<script>
+  var UICommercials = (function () {
+    var state = { data: null, loading: false };
+    var mainSaveTimer = null;
+    var paramsSaveTimer = null;
+    var pendingMain = { rows: null, rebuild: false };
+    var pdfDialog = null;
+    var pdfRequestId = 0;
+    var pdfCancelledId = 0;
+    var readyReported = false;
+    var preloadedData = null;
+    var selectedCell = { row: null, col: null };
+    var selectionRange = { anchor: null, focus: null };
+  var editingCell = null;
+  var clipboardInput = null;
+  var paramsRequestId = 0;
+  var columnWidths = loadColumnWidths();
+  var isDraggingSelection = false;
+    var isResizingColumn = false;
+  var historyStack = [];
+  var historyIndex = -1;
+  var lastColCount = 0;
+  var suppressHistory = false;
+  var kpEditingCell = null;
+  var kpSaveTimer = null;
+
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number') return isFinite(value) ? value : null;
+    var normalized = value.toString().replace(/\s+/g, '').replace(',', '.').trim();
+    var num = parseFloat(normalized);
+    return isNaN(num) ? null : num;
+  }
+
+  function normalizeSpaces(value) {
+    if (value == null) return '';
+    return String(value).replace(/\s+/g, ' ').trim();
+  }
+
+  function formatPrice(value) {
+    var num = parseNumber(value);
+    if (num == null) return '';
+    return num.toFixed(2).replace('.', ',');
+  }
+
+  function normalizePriceInput(value) {
+    if (value == null) return '';
+    var formatted = formatPrice(value);
+    if (formatted) return formatted;
+    return value.toString().replace('.', ',').trim();
+  }
+
+  function normalizeCellValue(value, colIdx) {
+    if (colIdx === 1 || colIdx === 2) return normalizeSpaces(value);
+    if (colIdx === 4) return normalizePriceInput(value);
+    return value == null ? '' : value;
+  }
+
+  function normalizeParamValue(value) {
+    if (value == null) return '';
+    var str = String(value).trim();
+    return str.replace('.', ',');
+  }
+
+  function markReady() {
+    if (readyReported) return;
+    readyReported = true;
+    if (window.AppModules && window.AppModules.markReady) {
+      window.AppModules.markReady('commercials');
+      }
+    }
+
+    function load() {
+      ensureCommercialsStyles();
+
+      setToolbarContent(
+        '<div class="cm-topbar cm-scrollbar">' +
+          '<div class="cm-topbar-track">' +
+          '<div class="cm-topbar-left">' +
+            '<span class="cm-logo-icon" aria-hidden="true">' +
+              '<svg viewBox="0 0 24 24" fill="none">' +
+                '<rect x="4" y="4" width="6" height="6" rx="1.5" fill="currentColor"></rect>' +
+                '<rect x="14" y="4" width="6" height="6" rx="1.5" fill="currentColor"></rect>' +
+                '<rect x="4" y="14" width="6" height="6" rx="1.5" fill="currentColor"></rect>' +
+                '<rect x="14" y="14" width="6" height="6" rx="1.5" fill="currentColor"></rect>' +
+              '</svg>' +
+            '</span>' +
+            '<div class="cm-topbar-title">KP Manager</div>' +
+            '<span class="cm-vert-divider" aria-hidden="true"></span>' +
+            '<div class="cm-topbar-field cm-topbar-field-org cm-org-combo">' +
+              '<span class="cm-topbar-label">ОРГАНИЗАЦИЯ</span>' +
+              '<input id="cmOrg" class="cm-input" type="text" autocomplete="off" placeholder="Организация...">' +
+              '<div id="cmOrgList" class="combo-list cm-scrollbar"></div>' +
+            '</div>' +
+            '<div class="cm-topbar-field cm-topbar-field-template">' +
+              '<span class="cm-topbar-label">КП1</span>' +
+              '<select id="cmTpl1" class="cm-input"></select>' +
+            '</div>' +
+            '<div class="cm-topbar-field cm-topbar-field-template">' +
+              '<span class="cm-topbar-label">КП2</span>' +
+              '<select id="cmTpl2" class="cm-input"></select>' +
+            '</div>' +
+            '<div class="cm-topbar-field cm-topbar-field-template">' +
+              '<span class="cm-topbar-label">КП3</span>' +
+              '<select id="cmTpl3" class="cm-input"></select>' +
+            '</div>' +
+          '</div>' +
+          '<span class="cm-topbar-spacer" aria-hidden="true"></span>' +
+          '<div class="cm-topbar-right">' +
+            '<div class="cm-settings">' +
+              '<button id="cmSettingsBtn" class="cm-btn cm-btn-icon" type="button" aria-label="Параметры расчета">' +
+                '<svg viewBox="0 0 24 24" fill="none"><path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7z" stroke="currentColor" stroke-width="1.8"></path><path d="M19.4 15a7.9 7.9 0 0 0 .1-2l2-1.2-2-3.5-2.3.6a7.7 7.7 0 0 0-1.7-1L14.9 4h-4l-.6 2.9a7.7 7.7 0 0 0-1.7 1l-2.3-.6-2 3.5 2 1.2a7.9 7.9 0 0 0 0 2l-2 1.2 2 3.5 2.3-.6a7.7 7.7 0 0 0 1.7 1l.6 2.9h4l.6-2.9a7.7 7.7 0 0 0 1.7-1l2.3.6 2-3.5-2-1.2z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>' +
+              '</button>' +
+            '</div>' +
+            '<button id="cmRefreshBtn" class="cm-btn" type="button">' +
+              '<svg viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path><path d="M20 5v6h-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>' +
+              'Обновить' +
+            '</button>' +
+            '<button id="cmOpenSheetBtn" class="cm-btn" type="button">' +
+              '<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="12" rx="2.5" stroke="currentColor" stroke-width="1.8"></rect><path d="M8 10h8M8 14h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>' +
+              'Таблица' +
+            '</button>' +
+            '<button id="cmClearBtn" class="cm-btn danger" type="button">' +
+              '<svg viewBox="0 0 24 24" fill="none"><path d="M4 12h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>' +
+              'Очистить' +
+            '</button>' +
+            '<button id="cmCreateKpBtn" class="cm-btn" type="button">' +
+              '<svg viewBox="0 0 24 24" fill="none"><path d="M12 6v12M6 12h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>' +
+              'Создать КП' +
+            '</button>' +
+            '<button id="cmPdfBtn" class="cm-btn primary" type="button">' +
+              '<svg viewBox="0 0 24 24" fill="none"><path d="M7 4h7l4 4v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.8"></path><path d="M14 4v4h4" stroke="currentColor" stroke-width="1.8"></path></svg>' +
+              'PDF' +
+            '</button>' +
+          '</div>' +
+          '</div>' +
+        '</div>'
+      );
+      setBottomPanelTitles('', '');
+      bindSettingsPanel();
+      bindTopbarActions();
+      fetchData();
+    }
+
+    function bindTopbarActions() {
+      var actions = [
+        ['cmRefreshBtn', refresh],
+        ['cmOpenSheetBtn', openSheet],
+        ['cmClearBtn', clearMain],
+        ['cmCreateKpBtn', createKp],
+        ['cmPdfBtn', createPdf]
+      ];
+
+      actions.forEach(function (pair) {
+        var id = pair[0];
+        var fn = pair[1];
+        var el = document.getElementById(id);
+        if (!el || el.dataset.cmBound) return;
+        el.dataset.cmBound = '1';
+        el.addEventListener('click', function (e) {
+          e.preventDefault();
+          fn();
+        });
+      });
+    }
+
+    function fetchData(options) {
+      options = options || {};
+      if (state.loading) return;
+      var silent = !!options.silent;
+      state.loading = true;
+      var guard = window.createTabGuard ? window.createTabGuard('commercials') : null;
+
+      if (preloadedData) {
+        state.loading = false;
+        state.data = preloadedData;
+        preloadedData = null;
+        render();
+        markReady();
+        return;
+      }
+
+      if (!silent) {
+        setDataAreaContent('<div class="panel-loading"><div class="spinner"></div><div>Загружаем коммерческие...</div></div>');
+      }
+
+      google.script.run
+        .withSuccessHandler(function (res) {
+          state.loading = false;
+          if (!res || !res.success) {
+            if (guard && guard.isActive()) {
+              setDataAreaContent('Ошибка загрузки: ' + (res && res.error ? res.error : 'неизвестная ошибка'));
+            }
+            markReady();
+            return;
+          }
+          state.data = res.data;
+          if (guard && guard.isActive()) {
+            render();
+          }
+          markReady();
+        })
+        .withFailureHandler(function (err) {
+          state.loading = false;
+          if (!silent && guard && guard.isActive()) {
+            setDataAreaContent('Ошибка загрузки: ' + err);
+          }
+          markReady();
+        })
+        .appBackend({ module: 'commercials', action: 'load', payload: {} });
+    }
+
+    function render() {
+      var d = state.data || {};
+      var headers = d.headers || [];
+      var mainRows = d.mainRows || [];
+      lastColCount = (mainRows[0] && (mainRows[0].values || []).length) || headers.length;
+      var params = d.params || {};
+      var templates = d.templates || {};
+      var templateOptions = d.templateOptions || [];
+      var kpTables = d.kpTables || [];
+
+      setSubtoolbarContent('');
+      syncTopbarInputs(params, templates, templateOptions, d.organization);
+
+      var headerCells = headers.map(function (h, idx) {
+        var extra = ' class="cm-col cm-col-' + idx + '"';
+        var resizer = idx < headers.length ? '<span class="cm-resizer" data-col="' + idx + '"></span>' : '';
+        return '<th' + extra + '><div class="cm-th-content">' + escapeHtml(h || '') + resizer + '</div></th>';
+      }).join('');
+
+      var colgroup = '<colgroup>' + headers.map(function (_, idx) {
+        var width = columnWidths && columnWidths.main ? columnWidths.main[idx] : null;
+        var style = width ? ' style="width:' + width + 'px"' : '';
+        return '<col class="cm-col cm-col-' + idx + '" data-col="' + idx + '"' + style + ' />';
+      }).join('') + '</colgroup>';
+
+      var rowsHtml = mainRows.map(function (r, idx) {
+  var cells = (r.values || []).map(function (v, colIdx) {
+    var id = 'cm-cell-' + idx + '-' + colIdx;
+    var isQty = colIdx === 3;
+    var isPrice = colIdx === 4;
+    var type = (isPrice || isQty) ? 'text' : 'text';
+    var step = '';
+    var inputMode = (isPrice || isQty) ? 'decimal' : '';
+    var align = ' class="cm-col cm-col-' + colIdx + (colIdx === 1 ? ' cm-name-cell' : '') + '"';
+    var locked = colIdx === 0;
+    var tdMeta = ' data-row="' + idx + '" data-col="' + colIdx + '"';
+    var inputMeta = ' data-row="' + idx + '" data-col="' + colIdx + '"' + (locked ? ' data-locked="1"' : ' data-editable="1"');
+    var readonly = 'readonly' + (locked ? ' class="cm-readonly"' : '');
+    var inputModeAttr = inputMode ? ' inputmode="' + inputMode + '"' : '';
+    var displayValue = isPrice ? (formatPrice(v) || (v == null ? '' : v)) : (v == null ? '' : v);
+
+    if (colIdx === 1) {
+      return (
+        '<td' + align + tdMeta + '>' +
+          '<div class="cm-cell-wrap">' +
+            '<textarea id="' + id + '" rows="1" ' + inputModeAttr + ' ' + readonly + inputMeta +
+              ' class="cm-textarea' + (locked ? ' cm-readonly' : '') + '">' + escapeHtml(displayValue) + '</textarea>' +
+          '</div>' +
+        '</td>'
+      );
+    }
+
+    return (
+      '<td' + align + tdMeta + '>' +
+        '<div class="cm-cell-wrap">' +
+          '<input id="' + id + '" type="' + type + '" ' + (step ? 'step="' + step + '"' : '') + inputModeAttr +
+            ' value="' + escapeAttr(displayValue) + '" ' + readonly + inputMeta + ' />' +
+        '</div>' +
+      '</td>'
+    );
+  }).join('');
+
+  return '<tr>' + cells + '</tr>';
+}).join('');
+
+
+      var mainTable = '' +
+        '<div class="cm-pane cm-pane-main">' +
+        '  <div class="cm-pane-head">' +
+        '    <div class="cm-pane-title">Основная таблица</div>' +
+        '    <div class="cm-pane-meta">Позиции: ' + mainRows.length + '</div>' +
+        '  </div>' +
+        '  <div class="cm-pane-body cm-scrollbar">' +
+        '    <div class="cm-table-wrapper cm-scrollbar">' +
+        '      <table class="cm-data-table cm-data-table-main">' + colgroup + '<thead><tr>' + headerCells + '</tr></thead><tbody>' + rowsHtml + '</tbody></table>' +
+        '    </div>' +
+        '  </div>' +
+        '  <button class="cm-add-row" onclick="UICommercials.addRow()">+ Добавить</button>' +
+        '</div>';
+
+      var kpHtml = kpTables.length ? kpTables.map(function (tbl, idx) {
+        var kpColCount = (tbl.values && tbl.values[0] ? tbl.values[0].length : 0) || 0;
+        var kpColGroup = kpColCount ? ('<colgroup>' + Array.apply(null, Array(kpColCount)).map(function (_, colIdx) {
+          var widths = columnWidths && columnWidths['kp' + idx];
+          var width = widths ? widths[colIdx] : null;
+          var style = width ? ' style=\"width:' + width + 'px\"' : '';
+          return '<col class="cm-col cm-col-' + colIdx + '" data-col=\"' + colIdx + '\"' + style + ' />';
+        }).join('') + '</colgroup>') : '';
+
+          var kpHeaders = ['№', 'Наименование', 'Ед.', 'Кол', 'Цена', 'Сумма'];
+        var kpHeaderRow = '<tr>' + kpHeaders.map(function (title, cIdx) {
+          return '<th class="cm-col cm-col-' + cIdx + '">' + escapeHtml(title) + '</th>';
+        }).join('') + '</tr>';
+        var filteredRows = filterKpRows_(tbl);
+        var kpTotal = filteredRows.reduce(function (sum, r) {
+          var val = r && r.values && r.values.length > 5 ? parseNumber(r.values[5]) : null;
+          return sum + (val || 0);
+        }, 0);
+        var kpTemplate = tbl.templateName || tbl.template || templates['kp' + (idx + 1)] || '';
+        var kpTitle = tbl.title || ('КП #' + (idx + 1));
+        return '' +
+          '<div class="cm-kp-card">' +
+          '  <div class="cm-kp-card-head">' +
+          '    <div>' +
+          '      <div class="cm-kp-title">' + escapeHtml(kpTitle) + '</div>' +
+          '      <div class="cm-kp-subtitle">' + escapeHtml(kpTemplate || '') + '</div>' +
+          '    </div>' +
+          '    <div class="cm-kp-row">#' + escapeHtml(tbl.startRow || '-') + '</div>' +
+          '  </div>' +
+          '  <div class="cm-table-wrapper cm-scrollbar">' +
+          '    <table class="cm-data-table cm-data-table-kp cm-kp-table" data-kp-index=\"' + idx + '\">' +
+          kpColGroup +
+          '<thead>' + kpHeaderRow + '</thead>' +
+          '<tbody>' + (filteredRows || []).map(function (rowData) {
+            var r = rowData.values || [];
+            var sourceRowIdx = rowData.rowIndex;
+            var tds = r.map(function (c, cIdx) {
+              var id = 'kp-cell-' + idx + '-' + sourceRowIdx + '-' + cIdx;
+              var cls = ' class="cm-col cm-col-' + cIdx + (cIdx === 1 ? ' kp-name-cell' : '') + '"';
+              var displayCell = (cIdx === 4 || cIdx === 5) ? (formatPrice(c) || (c == null ? '' : c)) : (c == null ? '' : c);
+              var inputMeta = ' data-kp-index="' + idx + '" data-kp-row="' + sourceRowIdx + '" data-kp-col="' + cIdx + '" data-editable="1"';
+              if (cIdx === 1) {
+                return '<td' + cls + '>' +
+                  '<div class="cm-cell-wrap">' +
+                    '<textarea id="' + id + '" rows="1" readonly class="kp-cell-textarea cm-readonly"' + inputMeta + '>' +
+                      escapeHtml(displayCell) +
+                    '</textarea>' +
+                  '</div>' +
+                '</td>';
+              }
+              return '<td' + cls + '>' +
+                '<div class="cm-cell-wrap">' +
+                  '<input id="' + id + '" type="text" value="' + escapeAttr(displayCell) + '" readonly class="kp-cell-input cm-readonly"' + inputMeta + ' />' +
+                '</div>' +
+              '</td>';
+            }).join('');
+            return '<tr>' + tds + '</tr>';
+          }).join('') + '</tbody>' +
+          '<tfoot><tr class="cm-kp-total-row">' +
+          '<td class="cm-col cm-col-0"></td>' +
+          '<td class="cm-col cm-col-1"></td>' +
+          '<td class="cm-col cm-col-2"></td>' +
+          '<td class="cm-col cm-col-3"></td>' +
+          '<td class="cm-col cm-col-4 cm-kp-total-label">ИТОГО</td>' +
+          '<td class="cm-col cm-col-5 cm-kp-total-value" id="kp-total-' + idx + '">' + (kpTotal ? formatPrice(kpTotal) : '') + '</td>' +
+          '</tr></tfoot>' +
+          '</table>' +
+          '  </div>' +
+          '</div>';
+      }).join('') : '<div class="home-empty">Нет сгенерированных КП — заполните таблицу слева.</div>';
+
+      var kpPanel = '' +
+        '<div class="cm-pane cm-pane-kp">' +
+        '  <div class="cm-pane-head cm-pane-head-kp">' +
+        '    <div class="cm-pane-title cm-pane-title-kp">' +
+        '      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7z" fill="none" stroke="currentColor" stroke-width="1.6"></path></svg>' +
+        '      РЕЗУЛЬТАТ' +
+        '    </div>' +
+        '    <span class="cm-kp-badge">Авто-расчет</span>' +
+        '  </div>' +
+        '  <div class="cm-pane-body cm-scrollbar">' +
+        '    <div class="cm-kp-list">' + kpHtml + '</div>' +
+        '  </div>' +
+        '</div>';
+
+      var html = '<div class="cm-root">' +
+        '<div class="cm-two-col">' + mainTable + kpPanel + '</div>' +
+        '</div>';
+      setDataAreaContent(html);
+
+      bindMainInputs(mainRows);
+      bindParamsInputs();
+      bindOrganizationCombo(d.organizationOptions || []);
+      applyStoredColumnWidthsFor('.cm-data-table-main', 'main');
+      bindColumnResizingFor('.cm-data-table-main', 'main');
+      var kpTablesList = document.querySelectorAll('.cm-data-table-kp');
+      kpTablesList.forEach(function (tbl) {
+        var key = 'kp' + (tbl.getAttribute('data-kp-index') || '0');
+        applyStoredColumnWidthsFor(tbl, key);
+        bindColumnResizingFor(tbl, key);
+      });
+      bindKpInputs(kpTables);
+
+      pushHistorySnapshot(mainRows);
+    }
+
+    function syncTopbarInputs(params, templates, templateOptions, organization) {
+      var orgInput = document.getElementById('cmOrg');
+      if (orgInput) orgInput.value = organization || '';
+
+      var tpl1 = document.getElementById('cmTpl1');
+      var tpl2 = document.getElementById('cmTpl2');
+      var tpl3 = document.getElementById('cmTpl3');
+      if (tpl1) tpl1.innerHTML = buildOptions(templateOptions || [], templates.kp1);
+      if (tpl2) tpl2.innerHTML = buildOptions(templateOptions || [], templates.kp2);
+      if (tpl3) tpl3.innerHTML = buildOptions(templateOptions || [], templates.kp3);
+
+      var j6 = document.getElementById('cmJ6');
+      var j3 = document.getElementById('cmJ3');
+      var j4 = document.getElementById('cmJ4');
+      var j5 = document.getElementById('cmJ5');
+      if (j6) j6.value = normalizeParamValue(params.j6);
+      if (j3) j3.value = normalizeParamValue(params.j3);
+      if (j4) j4.value = normalizeParamValue(params.j4);
+      if (j5) j5.value = normalizeParamValue(params.j5);
+    }
+
+    function bindSettingsPanel() {
+      var btn = document.getElementById('cmSettingsBtn');
+      if (!btn || btn.dataset.cmBound) return;
+      btn.dataset.cmBound = '1';
+
+      function ensurePopup() {
+        var popup = document.getElementById('cmSettingsPopup');
+        if (popup) return popup;
+
+        popup = document.createElement('div');
+        popup.id = 'cmSettingsPopup';
+        popup.className = 'cm-settings-popup';
+        popup.innerHTML =
+          '<div class="cm-settings-title">ПАРАМЕТРЫ РАСЧЕТА</div>' +
+          '<div class="cm-settings-grid">' +
+            '<label>НДС %<input id="cmJ6" type="text" inputmode="decimal"></label>' +
+            '<label>СР. ЦЕНА<input id="cmJ5" type="text" inputmode="decimal"></label>' +
+            '<label>НАЦ #2 %<input id="cmJ3" type="text" inputmode="decimal"></label>' +
+            '<label>НАЦ #3 %<input id="cmJ4" type="text" inputmode="decimal"></label>' +
+          '</div>';
+
+        document.body.appendChild(popup);
+        return popup;
+      }
+
+      function positionPopup(popup) {
+        var rect = btn.getBoundingClientRect();
+        var gap = 8;
+        popup.style.display = 'block';
+        var width = popup.offsetWidth || 280;
+        var height = popup.offsetHeight || 0;
+
+        var left = rect.left;
+        left = Math.max(12, Math.min(left, window.innerWidth - width - 12));
+
+        var top = rect.bottom + gap;
+        if (top + height > window.innerHeight - 12) {
+          top = Math.max(12, rect.top - gap - height);
+        }
+
+        popup.style.left = left + 'px';
+        popup.style.top = top + 'px';
+      }
+
+      function openPopup() {
+        var popup = ensurePopup();
+        popup.classList.add('open');
+        btn.classList.add('active');
+        positionPopup(popup);
+        syncTopbarInputs(
+          state.data ? state.data.params || {} : {},
+          state.data ? state.data.templates || {} : {},
+          state.data ? state.data.templateOptions || [] : [],
+          state.data ? state.data.organization || '' : ''
+        );
+
+        window.addEventListener('scroll', onReposition, true);
+        window.addEventListener('resize', onReposition);
+      }
+
+      function closePopup() {
+        var popup = document.getElementById('cmSettingsPopup');
+        if (popup) {
+          popup.classList.remove('open');
+          popup.style.display = 'none';
+        }
+        btn.classList.remove('active');
+        window.removeEventListener('scroll', onReposition, true);
+        window.removeEventListener('resize', onReposition);
+      }
+
+      function onReposition() {
+        var popup = document.getElementById('cmSettingsPopup');
+        if (!popup || !popup.classList.contains('open')) return;
+        positionPopup(popup);
+      }
+
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var popup = ensurePopup();
+        var isOpen = popup.classList.contains('open');
+        if (isOpen) closePopup();
+        else openPopup();
+      });
+
+      ensurePopup();
+
+      document.addEventListener('mousedown', function (e) {
+        var popup = document.getElementById('cmSettingsPopup');
+        if (!popup || !popup.classList.contains('open')) return;
+        if (popup.contains(e.target) || btn.contains(e.target)) return;
+        closePopup();
+      });
+
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        var popup = document.getElementById('cmSettingsPopup');
+        if (popup && popup.classList.contains('open')) closePopup();
+      });
+    }
+
+    function buildToolbar(params, templates, templateOptions, organization, folderUrl) {
+      return '' +
+        '<div class="cm-toolbar-row">' +
+          '<div class="cm-field cm-field-org">' +
+            '<span class="cm-label">ОРГАНИЗАЦИЯ</span>' +
+            '<div class="combo-wrapper cm-org-combo">' +
+              '<input id="cmOrg" class="combo-input" type="text" autocomplete="off" value="' + escapeAttr(organization || '') + '">' +
+              '<div id="cmOrgList" class="combo-list cm-scrollbar"></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="cm-vert-divider cm-vert-divider-tall" aria-hidden="true"></div>' +
+          '<div class="cm-field-group cm-field-group-digits">' +
+            '<div class="cm-field cm-field-xs">' +
+              '<span class="cm-label">НДС %</span>' +
+              '<input id="cmJ6" type="text" inputmode="decimal" value="' + escapeAttr(normalizeParamValue(params.j6)) + '">' +
+            '</div>' +
+            '<div class="cm-field cm-field-sm">' +
+              '<span class="cm-label">НАЦ #2 %</span>' +
+              '<input id="cmJ3" type="text" inputmode="decimal" value="' + escapeAttr(normalizeParamValue(params.j3)) + '">' +
+            '</div>' +
+            '<div class="cm-field cm-field-sm">' +
+              '<span class="cm-label">НАЦ #3 %</span>' +
+              '<input id="cmJ4" type="text" inputmode="decimal" value="' + escapeAttr(normalizeParamValue(params.j4)) + '">' +
+            '</div>' +
+            '<div class="cm-field cm-field-md">' +
+              '<span class="cm-label">СР. ЦЕНА</span>' +
+              '<input id="cmJ5" type="text" inputmode="decimal" value="' + escapeAttr(normalizeParamValue(params.j5)) + '">' +
+            '</div>' +
+          '</div>' +
+          '<div class="cm-vert-divider cm-vert-divider-tall" aria-hidden="true"></div>' +
+          '<div class="cm-field-group cm-field-group-templates">' +
+            '<div class="cm-field cm-field-flex">' +
+              '<span class="cm-label">ШАБЛОН КП1</span>' +
+              '<select id="cmTpl1">' + buildOptions(templateOptions, templates.kp1) + '</select>' +
+            '</div>' +
+            '<div class="cm-field cm-field-flex">' +
+              '<span class="cm-label">ШАБЛОН КП2</span>' +
+              '<select id="cmTpl2">' + buildOptions(templateOptions, templates.kp2) + '</select>' +
+            '</div>' +
+            '<div class="cm-field cm-field-flex">' +
+              '<span class="cm-label">ШАБЛОН КП3</span>' +
+              '<select id="cmTpl3">' + buildOptions(templateOptions, templates.kp3) + '</select>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+    }
+
+    function ensureCommercialsStyles() {
+      if (document.getElementById('cm-commercials-styles')) return;
+
+      var st = document.createElement('style');
+      st.id = 'cm-commercials-styles';
+      st.textContent =
+        '.cm-root{height:100%;display:flex;flex-direction:column;background:var(--bg-app);color:var(--text-main);font-family:system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;overflow:hidden;margin-top:-12px;}' +
+        '.cm-scrollbar{scrollbar-width:thin;scrollbar-color:#cbd5f5 transparent;}' +
+        '.cm-scrollbar::-webkit-scrollbar{width:8px;height:8px;}' +
+        '.cm-scrollbar::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px;}' +
+        '.cm-scrollbar::-webkit-scrollbar-thumb:hover{background:#94a3b8;}' +
+        '.cm-topbar{height:64px;display:flex;align-items:flex-end;gap:12px;padding:6px 12px;background:rgba(255,255,255,0.8);border-bottom:none;overflow-x:auto;overflow-y:hidden;position:sticky;top:0;z-index:1300;backdrop-filter:blur(16px);width:100%;max-width:100%;margin:0;}' +
+        '.app-root.sidebar-collapsed .cm-topbar{max-width:100%;}' +
+        '.cm-topbar-host{padding:0 12px 0;background:transparent;}' +
+        '.cm-topbar-track{display:flex;align-items:flex-end;gap:12px;width:100%;min-width:0;flex-wrap:nowrap;}' +
+        '.cm-topbar-left{display:flex;align-items:flex-end;gap:10px;flex:0 0 auto;min-width:max-content;flex-wrap:nowrap;}' +
+        '.cm-topbar-right{display:flex;align-items:flex-end;gap:10px;flex:0 0 auto;flex-wrap:nowrap;}' +
+        '.cm-logo-icon{display:inline-flex;align-items:center;justify-content:center;padding:6px;border-radius:6px;background:#2563eb;color:#fff;}' +
+        '.cm-logo-icon svg{width:16px;height:16px;}' +
+        '.cm-topbar-title{font-size:16px;font-weight:700;color:var(--text-main);}' +
+        '.cm-vert-divider{width:1px;height:20px;background:#e2e8f0;}' +
+        '.cm-vert-divider-tall{height:32px;}' +
+        '.cm-topbar-field{position:relative;display:flex;flex-direction:column;gap:4px;min-width:0;}' +
+        '.cm-topbar-label{font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;}' +
+        '.cm-topbar-field-org{min-width:260px;max-width:320px;flex:0 1 320px;}' +
+        '.cm-topbar-field-template{min-width:120px;max-width:150px;flex:0 1 150px;}' +
+        '.cm-topbar-spacer{flex:1 0 24px;min-width:24px;}' +
+        '.cm-input{width:100%;height:32px;padding:0 10px;border-radius:8px;border:none;background:#f8fafc;font-size:12px;box-sizing:border-box;color:var(--text-main);box-shadow:0 10px 22px rgba(15,23,42,0.08), inset 0 1px 2px rgba(255,255,255,0.7);}' +
+        '.cm-input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,0.15);background:#fff;}' +
+        '.cm-btn{height:32px;padding:0 10px;border-radius:8px;border:none;background:#fff;color:#475569;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;box-shadow:0 6px 14px rgba(15,23,42,0.08);transition:background .12s ease,border-color .12s ease,color .12s ease,box-shadow .12s ease;}' +
+        '.cm-btn:hover{background:#f8fafc;border-color:#cbd5e1;color:#1e293b;box-shadow:0 10px 20px rgba(15,23,42,0.12);}' +
+        '.cm-btn svg{width:14px;height:14px;}' +
+        '.cm-btn.primary{background:#2563eb;border:none;color:#fff;}' +
+        '.cm-btn.danger{border:none;color:#dc2626;background:#fff;}' +
+        '.cm-btn.danger:hover{background:#fef2f2;border-color:#fca5a5;color:#b91c1c;}' +
+        '.cm-btn-icon{width:32px;justify-content:center;padding:0;border-radius:10px;border:none;color:#64748b;background:#fff;box-shadow:0 6px 14px rgba(15,23,42,0.08);}' +
+        '.cm-btn-icon.active{border-color:#2563eb;color:#2563eb;background:#eff6ff;}' +
+        '.cm-settings{position:relative;}' +
+        '.cm-settings-popup{position:fixed;right:auto;top:auto;width:280px;background:#fff;border:none;border-radius:14px;box-shadow:0 20px 40px rgba(15,23,42,0.18);padding:14px;display:none;z-index:20000;box-sizing:border-box;}' +
+        '.cm-settings-popup.open{display:block;}' +
+        '.cm-settings-title{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-main);margin-bottom:10px;}' +
+        '.cm-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}' +
+        '.cm-settings-grid label{display:flex;flex-direction:column;gap:4px;font-size:11px;font-weight:700;color:#64748b;}' +
+        '.cm-settings-grid input{width:100%;height:32px;padding:0 10px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;font-size:12px;box-sizing:border-box;color:var(--text-main);box-shadow:0 8px 18px rgba(15,23,42,0.12);}' +
+        '.cm-settings-grid input:focus{outline:none;border-color:#93c5fd;box-shadow:0 0 0 3px rgba(59,130,246,0.15), 0 10px 22px rgba(15,23,42,0.12);}' +
+        '.cm-toolbar-row{display:none;}' +
+        '.cm-label{display:block;font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;margin-bottom:4px;}' +
+        '.cm-field{display:flex;flex-direction:column;gap:4px;min-width:120px;}' +
+        '.cm-field-org{flex:1;min-width:150px;max-width:320px;}' +
+        '.cm-field-group{display:flex;align-items:flex-end;gap:12px;}' +
+        '.cm-field-group-templates{flex:1;gap:8px;min-width:300px;}' +
+        '.cm-field-flex{flex:1;min-width:120px;}' +
+        '.cm-field-xs{width:64px;min-width:64px;}' +
+        '.cm-field-sm{width:80px;min-width:80px;}' +
+        '.cm-field-md{width:96px;min-width:96px;}' +
+        '.cm-field input,.cm-field select,.combo-input{height:28px;padding:0 8px;border-radius:6px;border:none;background:#f8fafc;font-size:12px;box-sizing:border-box;color:var(--text-main);box-shadow:0 10px 22px rgba(15,23,42,0.08), inset 0 1px 2px rgba(255,255,255,0.7);}' +
+        '.combo-wrapper{position:relative;width:100%;}' +
+        '.combo-list{position:absolute;left:0;right:0;top:100%;margin-top:6px;background:#fff;border:1px solid #cbd5e1;box-shadow:0 12px 20px rgba(15,23,42,0.12);border-radius:8px;max-height:240px;overflow-y:auto;padding:6px;z-index:15000;display:none;}' +
+        '.cm-org-list-popup{position:fixed;left:0;top:0;right:auto;width:280px;margin-top:0;z-index:20000;}' +
+        '.cm-two-col{flex:1;min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:0 12px 12px;background:rgba(241,245,249,0.4);overflow:hidden;}' +
+        '@media(max-width:1200px){.cm-two-col{grid-template-columns:1fr;}}' +
+        '.cm-pane{display:flex;flex-direction:column;min-height:0;background:#fff;border:none;border-radius:10px;box-shadow:0 6px 16px rgba(15,23,42,0.08);}' +
+        '.cm-pane-main{background:#fff;}' +
+        '.cm-pane-kp{background:#fff;border-color:#e2e8f0;}' +
+        '.cm-pane-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:none;background:#f8fafc;font-size:13px;font-weight:700;}' +
+        '.cm-pane-head-kp{background:#f8fafc;}' +
+        '.cm-pane-title{font-size:13px;font-weight:700;}' +
+        '.cm-pane-title-kp{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-main);}' +
+        '.cm-pane-title-kp svg{width:16px;height:16px;}' +
+        '.cm-pane-meta{font-size:12px;color:#64748b;}' +
+        '.cm-kp-badge{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;}' +
+        '.cm-pane-body{flex:1;min-height:0;overflow:auto;padding:8px 12px;}' +
+        '.cm-kp-list{display:flex;flex-direction:column;gap:12px;}' +
+        '.cm-kp-card{background:#fff;border:none;border-radius:10px;box-shadow:0 6px 16px rgba(15,23,42,0.08);padding:8px;}' +
+        '.cm-kp-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 4px 8px;}' +
+        '.cm-kp-title{font-size:12px;font-weight:700;color:var(--text-main);}' +
+        '.cm-kp-subtitle{font-size:10px;color:#94a3b8;}' +
+        '.cm-kp-row{font-size:10px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#94a3b8;}' +
+        '.cm-table-wrapper{width:100%;overflow:auto;}' +
+        '.cm-data-table{width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed;}' +
+        '.cm-data-table th{position:sticky;top:0;background:#f8fafc;font-size:11px;color:#64748b;border-bottom:none;text-align:center;padding:4px 6px;text-transform:none;}' +
+        '.cm-data-table td{border-bottom:none;padding:0;vertical-align:middle;text-align:center;}' +
+        '.cm-data-table .cm-cell-wrap{width:100%;height:100%;display:flex;align-items:center;justify-content:center;}' +
+        '.cm-data-table td input,.cm-data-table td textarea{width:100%;height:100%;padding:4px 6px;border:none;background:transparent;box-shadow:none;outline:none;font-size:11px;text-align:center;}' +
+        '.cm-data-table td input:focus,.cm-data-table td textarea:focus{outline:none;box-shadow:none;border:none;}' +
+        '.cm-data-table td textarea{resize:none;overflow:hidden;line-height:1.4;white-space:normal;word-break:break-word;}' +
+        '.cm-col-0 input,.cm-col-2 input,.cm-col-3 input{text-align:center;}' +
+        '.cm-col-4 input,.cm-col-5 input{text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;}' +
+        '.cm-kp-table td input,.cm-kp-table td textarea{font-size:10px;line-height:1.4;font-weight:600;text-align:center;}' +
+        '.cm-kp-table .cm-cell-wrap{display:flex;align-items:center;justify-content:center;height:100%;}' +
+        '.cm-kp-table .cm-readonly{background:transparent;color:inherit;}' +
+        '.kp-name-text{font-size:10px;line-height:1.4;white-space:normal;word-break:break-word;padding:4px 6px;color:#0f172a;text-align:center;}' +
+        '.cm-kp-table th{font-size:9.5px;letter-spacing:0.06em;text-transform:uppercase;}' +
+        '.cm-topbar::-webkit-scrollbar{height:8px;}' +
+        '.cm-topbar::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px;}' +
+        '.cm-topbar::-webkit-scrollbar-thumb:hover{background:#94a3b8;}' +
+        '.cm-data-table tr:hover td{background:#eff6ff;}' +
+        '.cm-data-table .cm-col-0{width:40px;text-align:center;}' +
+        '.cm-data-table .cm-col-1{text-align:center;}' +
+        '.cm-data-table .cm-col-2{width:60px;text-align:center;}' +
+        '.cm-data-table .cm-col-3{width:60px;text-align:center;}' +
+        '.cm-data-table .cm-col-4{width:80px;text-align:center;}' +
+        '.cm-kp-table .cm-col-0{width:32px;text-align:center;}' +
+        '.cm-kp-table .cm-col-2{width:42px;text-align:center;}' +
+        '.cm-kp-table .cm-col-3{width:42px;text-align:center;}' +
+        '.cm-kp-table .cm-col-4{width:72px;text-align:right;}' +
+        '.cm-kp-table .cm-col-5{width:72px;text-align:right;}' +
+        '.cm-data-table-main col.cm-col-0{width:40px;}' +
+        '.cm-data-table-main col.cm-col-1{width:520px;}' +
+        '.cm-data-table-main col.cm-col-2{width:60px;}' +
+        '.cm-data-table-main col.cm-col-3{width:60px;}' +
+        '.cm-data-table-main col.cm-col-4{width:80px;}' +
+        '.cm-kp-table col.cm-col-0{width:32px;}' +
+        '.cm-kp-table col.cm-col-1{width:360px;}' +
+        '.cm-kp-table col.cm-col-2{width:42px;}' +
+        '.cm-kp-table col.cm-col-3{width:42px;}' +
+        '.cm-kp-table col.cm-col-4{width:72px;}' +
+        '.cm-kp-table col.cm-col-5{width:72px;}' +
+        '.cm-readonly{background:#f8fafc;color:#64748b;}' +
+        '.kp-name-cell input,.kp-name-input{font-weight:600;}' +
+        '.cm-th-content{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;padding-right:16px;font-size:12px;}' +
+        '.cm-name-cell .cm-cell-wrap{display:flex;align-items:center;justify-content:center;height:100%;}' +
+        '.cm-name-cell textarea{height:100%;padding:4px 6px;display:flex;align-items:center;justify-content:center;line-height:1.4;}' +
+        '.cm-col-2 input,.cm-col-3 input,.cm-col-4 input{border:none;outline:none;box-shadow:none;}' +
+        '.cm-kp-table .kp-name-cell .cm-cell-wrap{display:flex;align-items:center;justify-content:center;height:100%;}' +
+        '.cm-kp-table .kp-name-cell textarea{height:100%;padding:4px 6px;display:flex;align-items:center;justify-content:center;line-height:1.4;}' +
+        '.cm-kp-table .cm-col-4 input,.cm-kp-table .cm-col-5 input,.cm-kp-table .cm-col-4 textarea,.cm-kp-table .cm-col-5 textarea{text-align:center;font-family:inherit;}' +
+        '.cm-kp-table tbody td{color:#94a3b8;font-weight:500;}' +
+        '.cm-resizer{position:absolute;right:-4px;top:0;bottom:0;width:12px;cursor:col-resize;}' +
+        '.cm-kp-resizers th{position:relative;padding:0;height:4px;border:none;background:transparent;}' +
+        '.cm-cell-selected{outline:2px solid var(--primary-color);outline-offset:-2px;border-radius:6px;background:rgba(37,99,235,0.08);}' +
+        '.cm-cell-editing input,.cm-cell-editing textarea{background:#fff7ed;}' +
+        '.cm-add-row{margin:8px 12px 12px;height:30px;border-radius:6px;border:none;background:transparent;color:#64748b;font-size:12px;font-weight:600;cursor:pointer;transition:background .12s ease,border-color .12s ease,color .12s ease;box-shadow:inset 0 0 0 1px rgba(203,213,225,0.6);}' +
+        '.cm-add-row:hover{background:#eff6ff;border-color:#3b82f6;color:#2563eb;}' +
+        '.cm-kp-total-row td{background:#f8fafc;font-weight:700;border-top:none;}' +
+        '.cm-kp-total-label{text-align:right;}' +
+        '.cm-kp-total-value{text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;}' +
+        '.cm-clipboard-input{position:fixed;opacity:0;pointer-events:none;left:-2000px;top:-2000px;width:1px;height:1px;}' +
+        '.cm-pdf-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:none;align-items:center;justify-content:center;z-index:99999;}' +
+        '.cm-pdf-card{background:#fff;border-radius:12px;padding:24px 28px;min-width:320px;max-width:420px;box-shadow:var(--shadow-elevation-4);display:flex;flex-direction:column;gap:16px;align-items:center;text-align:center;}' +
+        '.cm-pdf-title{font-size:18px;font-weight:700;}' +
+        '.cm-pdf-message{color:#64748b;line-height:1.4;}' +
+        '.cm-pdf-spinner{width:48px;height:48px;border-radius:50%;border:4px solid #e2e8f0;border-top-color:#2563eb;animation:cmSpin 1s linear infinite;}' +
+        '.cm-pdf-links{display:flex;flex-direction:column;gap:6px;width:100%;}' +
+        '.cm-pdf-links a{color:#2563eb;font-weight:600;text-decoration:none;}' +
+        '.cm-pdf-links a:hover{text-decoration:underline;}' +
+        '.cm-pdf-actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;}' +
+        '.cm-pdf-actions button{padding:10px 16px;border-radius:10px;border:1px solid #e2e8f0;background:#f8fafc;cursor:pointer;}' +
+        '.cm-pdf-actions .primary{background:#2563eb;color:#fff;border-color:#2563eb;}' +
+        'body.theme-dark .cm-root{background:#0b1220;color:#f8fafc;}' +
+        'body.theme-dark .cm-topbar{background:rgba(15,23,42,0.9);border-bottom:1px solid rgba(255,255,255,0.08);}' +
+        'body.theme-dark .cm-topbar-title{color:#f8fafc;}' +
+        'body.theme-dark .cm-vert-divider{background:rgba(255,255,255,0.08);}' +
+        'body.theme-dark .cm-topbar-label,body.theme-dark .cm-label{color:#94a3b8;}' +
+        'body.theme-dark .cm-input,body.theme-dark .cm-field input,body.theme-dark .cm-field select,body.theme-dark .combo-input{background:#0b1220;color:#f8fafc;border:1px solid rgba(255,255,255,0.08);box-shadow:inset 0 1px 2px rgba(0,0,0,0.6);}' +
+        'body.theme-dark .cm-input:focus{background:#0f172a;box-shadow:0 0 0 2px rgba(96,165,250,0.25);}' +
+        'body.theme-dark .cm-btn,body.theme-dark .cm-btn-icon{background:#0b1220;color:#f8fafc;border:1px solid rgba(255,255,255,0.08);box-shadow:0 12px 24px rgba(0,0,0,0.4);}' +
+        'body.theme-dark .cm-btn:hover{background:#101a2f;color:#f8fafc;}' +
+        'body.theme-dark .cm-btn-icon.active{background:#101a2f;color:#93c5fd;}' +
+        'body.theme-dark .cm-two-col{background:rgba(2,6,23,0.6);}' +
+        'body.theme-dark .cm-pane,body.theme-dark .cm-kp-card{background:#0b1220;border:1px solid rgba(255,255,255,0.08);box-shadow:0 20px 40px rgba(0,0,0,0.45);}' +
+        'body.theme-dark .cm-pane-head{background:#0f172a;color:#e2e8f0;border-bottom:1px solid rgba(255,255,255,0.08);}' +
+        'body.theme-dark .cm-pane-meta{color:#94a3b8;}' +
+        'body.theme-dark .cm-kp-badge{background:#101a2f;color:#93c5fd;border-color:rgba(96,165,250,0.3);}' +
+        'body.theme-dark .cm-data-table th{background:#0f172a;color:#94a3b8;}' +
+        'body.theme-dark .cm-data-table td{color:#e2e8f0;}' +
+        'body.theme-dark .cm-data-table td input,body.theme-dark .cm-data-table td textarea{color:#f8fafc;}' +
+        'body.theme-dark .cm-data-table tr:hover td{background:#101a2f;}' +
+        'body.theme-dark .cm-cell-selected{background:#101a2f;outline-color:rgba(96,165,250,0.6);}' +
+        'body.theme-dark .cm-cell-editing input,body.theme-dark .cm-cell-editing textarea{background:#0f172a;}' +
+        'body.theme-dark .cm-add-row{color:#94a3b8;box-shadow:inset 0 0 0 1px rgba(255,255,255,0.12);}' +
+        'body.theme-dark .cm-add-row:hover{background:#101a2f;color:#93c5fd;}' +
+        'body.theme-dark .cm-kp-total-row td{background:#0f172a;color:#e2e8f0;}' +
+        'body.theme-dark .cm-readonly{background:#0f172a;color:#94a3b8;}' +
+        'body.theme-dark .cm-kp-table .cm-readonly{background:transparent;color:inherit;}' +
+        'body.theme-dark .cm-settings-popup{background:#0b1220;border:1px solid rgba(255,255,255,0.08);box-shadow:0 24px 48px rgba(0,0,0,0.55);}' +
+        'body.theme-dark .cm-settings-title{color:#f8fafc;}' +
+        'body.theme-dark .cm-settings-grid label{color:#94a3b8;}' +
+        'body.theme-dark .cm-settings-grid input{background:#0f172a;color:#f8fafc;border:1px solid rgba(255,255,255,0.12);box-shadow:0 14px 26px rgba(0,0,0,0.45);}' +
+        'body.theme-dark .cm-settings-grid input:focus{border-color:rgba(96,165,250,0.7);box-shadow:0 0 0 3px rgba(96,165,250,0.2), 0 16px 28px rgba(0,0,0,0.55);}' +
+        '@keyframes cmSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}';
+      document.head.appendChild(st);
+    }
+
+    function escapeHtml(str) {
+      if (str == null) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+    function escapeAttr(str) { return escapeHtml(str).replace(/\n/g, ' '); }
+
+  function buildOptions(list, selected) {
+    return list.map(function (opt) {
+      return '<option value="' + escapeAttr(opt) + '"' + (opt === selected ? ' selected' : '') + '>' + escapeHtml(opt) + '</option>';
+    }).join('');
+  }
+
+  function filterKpRows_(tbl) {
+    return (tbl && tbl.values ? tbl.values : []).map(function (row, rowIndex) {
+      var col0 = row && row[0] != null ? String(row[0]).toLowerCase() : '';
+      var col1 = row && row[1] != null ? String(row[1]).toLowerCase() : '';
+      if (col1 === 'итого' || col1 === 'итог') return null;
+      if (col0 === '№' || col1 === 'наименование') return null;
+      return { rowIndex: rowIndex, values: row };
+    }).filter(function (row) { return !!row; });
+  }
+
+    function isRowComplete(values) {
+      if (!values || values.length < 5) return false;
+      var name = values[1];
+      var unit = values[2];
+      var qty = parseFloat(values[3]);
+      var price = parseFloat(values[4]);
+      return !!(name && unit && qty > 0 && price > 0);
+    }
+
+  function collectMain() {
+      var d = state.data || {};
+      var rows = d.mainRows || [];
+      return rows.map(function (r, idx) {
+        var values = [];
+        for (var c = 0; c < (r.values || []).length; c++) {
+          var el = document.getElementById('cm-cell-' + idx + '-' + c);
+          var raw = el ? el.value : '';
+          values.push(normalizeCellValue(raw, c));
+        }
+        return { row: r.row, values: values };
+      });
+    }
+
+    function ensureClipboardInput() {
+      if (clipboardInput) return clipboardInput;
+      clipboardInput = document.createElement('textarea');
+      clipboardInput.className = 'cm-clipboard-input';
+      clipboardInput.setAttribute('aria-hidden', 'true');
+      clipboardInput.tabIndex = -1;
+      clipboardInput.addEventListener('paste', function (e) {
+        if (!selectedCell || editingCell) return;
+        var text = (e.clipboardData || window.clipboardData).getData('text');
+        var html = (e.clipboardData || window.clipboardData).getData('text/html');
+        if (!text && !html) return;
+        e.preventDefault();
+        applyPastedTable(text || '', selectedCell.row, selectedCell.col, html);
+      });
+      clipboardInput.addEventListener('copy', function (e) {
+        if (!selectionRange.anchor || !selectionRange.focus) return;
+        var text = selectionToText();
+        if (!text) return;
+        e.preventDefault();
+        if (e.clipboardData) {
+          e.clipboardData.setData('text/plain', text);
+        }
+      });
+      document.body.appendChild(clipboardInput);
+      return clipboardInput;
+    }
+
+    function findCellInput(row, col) {
+      return document.getElementById('cm-cell-' + row + '-' + col);
+    }
+
+    function findKpInput(tableIdx, rowIdx, colIdx) {
+      return document.getElementById('kp-cell-' + tableIdx + '-' + rowIdx + '-' + colIdx);
+    }
+
+    function findCellTd(row, col) {
+      return document.querySelector('td[data-row="' + row + '"][data-col="' + col + '"]');
+    }
+
+    function beginEditWithValue(row, col, value) {
+      var input = findCellInput(row, col);
+      if (!input || input.dataset.locked === '1') return;
+      enterEditCell(row, col);
+      var editable = findCellInput(row, col);
+      if (editable) {
+        editable.value = value;
+        var pos = editable.value.length;
+        if (editable.setSelectionRange) editable.setSelectionRange(pos, pos);
+      }
+    }
+
+    function exitEditingCell(commitChanges) {
+      if (!editingCell) return;
+      var row = editingCell.row;
+      var col = editingCell.col;
+      var original = editingCell.original;
+      var current = findCellInput(row, col);
+      var td = findCellTd(row, col);
+      var wasEditing = current && current.dataset.cmEditing === '1';
+
+      if (td) td.classList.remove('cm-cell-editing');
+      if (current) {
+        var normalizedValue = normalizeCellValue(current.value, col);
+        if (normalizedValue !== current.value) current.value = normalizedValue;
+        current.readOnly = true;
+        current.dataset.cmEditing = '';
+        delete current.dataset.cmOriginal;
+      }
+
+      editingCell = null;
+
+      if (commitChanges && wasEditing && current && current.value !== original) {
+        onMainCellChange(row);
+      }
+
+      if (commitChanges && wasEditing) {
+        var clip = ensureClipboardInput();
+        clip.value = '';
+        clip.focus();
+      }
+    }
+
+    function enterKpEditCell(tableIdx, rowIdx, colIdx) {
+      var input = findKpInput(tableIdx, rowIdx, colIdx);
+      if (!input) return;
+      if (kpEditingCell) exitKpEditingCell(true);
+      kpEditingCell = { table: tableIdx, row: rowIdx, col: colIdx, original: input.value };
+      var td = input.closest('td');
+      if (td) td.classList.add('cm-cell-editing');
+      input.readOnly = false;
+      input.dataset.cmEditing = '1';
+      input.focus();
+      var len = input.value ? input.value.length : 0;
+      if (input.setSelectionRange) input.setSelectionRange(len, len);
+      if (input.tagName === 'TEXTAREA') autoResizeTextarea(input);
+    }
+
+    function exitKpEditingCell(commitChanges) {
+      if (!kpEditingCell) return;
+      var row = kpEditingCell.row;
+      var col = kpEditingCell.col;
+      var tableIdx = kpEditingCell.table;
+      var original = kpEditingCell.original;
+      var current = findKpInput(tableIdx, row, col);
+      var td = current ? current.closest('td') : null;
+      var wasEditing = current && current.dataset.cmEditing === '1';
+
+      if (td) td.classList.remove('cm-cell-editing');
+      if (current) {
+        var normalizedValue = normalizeKpCellValue(current.value, col);
+        if (normalizedValue !== current.value) current.value = normalizedValue;
+        current.readOnly = true;
+        current.dataset.cmEditing = '';
+      }
+
+      kpEditingCell = null;
+
+      if (commitChanges && wasEditing && current && current.value !== original) {
+        updateKpCell(tableIdx, row, col, current.value);
+      }
+    }
+
+    function updateKpCell(tableIdx, rowIdx, colIdx, value) {
+      var d = state.data || {};
+      var tables = d.kpTables || [];
+      var table = tables[tableIdx];
+      if (!table || !table.values) return;
+      if (!table.values[rowIdx]) table.values[rowIdx] = [];
+      table.values[rowIdx][colIdx] = normalizeKpCellValue(value, colIdx);
+      queueSaveKpTables();
+      updateKpTotal(tableIdx);
+    }
+
+    function selectCell(row, col, focusClipboard) {
+      setSelectionRange({ row: row, col: col }, { row: row, col: col }, focusClipboard);
+    }
+
+    function selectionToText() {
+      if (!selectionRange.anchor || !selectionRange.focus) return '';
+      var minRow = Math.min(selectionRange.anchor.row, selectionRange.focus.row);
+      var maxRow = Math.max(selectionRange.anchor.row, selectionRange.focus.row);
+      var minCol = Math.min(selectionRange.anchor.col, selectionRange.focus.col);
+      var maxCol = Math.max(selectionRange.anchor.col, selectionRange.focus.col);
+
+      var lines = [];
+      for (var r = minRow; r <= maxRow; r++) {
+        var rowVals = [];
+        for (var c = minCol; c <= maxCol; c++) {
+          var input = findCellInput(r, c);
+          rowVals.push(input ? (input.value || '') : '');
+        }
+        lines.push(rowVals.join('\t'));
+      }
+      return lines.join('\n');
+    }
+
+    function copySelectionToClipboard() {
+      if (!selectionRange.anchor || !selectionRange.focus) return;
+      var text = selectionToText();
+      if (!text) return;
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(function () {
+          fallbackCopy(text);
+        });
+      } else {
+        fallbackCopy(text);
+      }
+    }
+
+    function fallbackCopy(text) {
+      var clip = ensureClipboardInput();
+      clip.value = text;
+      clip.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      clip.focus();
+    }
+
+    document.addEventListener('paste', function (e) {
+      var target = e.target;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) {
+        return;
+      }
+      if (editingCell) return;
+      if (!selectedCell) return;
+      var text = (e.clipboardData || window.clipboardData).getData('text');
+      var html = (e.clipboardData || window.clipboardData).getData('text/html');
+      if (!text && !html) return;
+      e.preventDefault();
+      applyPastedTable(text || '', selectedCell.row, selectedCell.col, html);
+    });
+
+    function setSelectionRange(anchor, focus, focusClipboard) {
+      var sameAsEditing = editingCell && anchor.row === editingCell.row && anchor.col === editingCell.col &&
+        focus.row === editingCell.row && focus.col === editingCell.col;
+      if (!sameAsEditing) exitEditingCell(true);
+      selectedCell = { row: focus.row, col: focus.col };
+      selectionRange = { anchor: anchor, focus: focus };
+
+      Array.prototype.forEach.call(document.querySelectorAll('.cm-cell-selected'), function (el) {
+        el.classList.remove('cm-cell-selected');
+      });
+
+      var minRow = Math.min(anchor.row, focus.row);
+      var maxRow = Math.max(anchor.row, focus.row);
+      var minCol = Math.min(anchor.col, focus.col);
+      var maxCol = Math.max(anchor.col, focus.col);
+
+      for (var r = minRow; r <= maxRow; r++) {
+        for (var c = minCol; c <= maxCol; c++) {
+          var td = findCellTd(r, c);
+          if (td) td.classList.add('cm-cell-selected');
+        }
+      }
+
+      if (focusClipboard !== false && !sameAsEditing) {
+        var clip = ensureClipboardInput();
+        clip.value = '';
+        clip.focus();
+      }
+    }
+
+    function clearSelectionRange() {
+      selectionRange = { anchor: null, focus: null };
+      selectedCell = { row: null, col: null };
+      Array.prototype.forEach.call(document.querySelectorAll('.cm-cell-selected'), function (el) {
+        el.classList.remove('cm-cell-selected');
+      });
+    }
+
+    function enterEditCell(row, col) {
+      var input = findCellInput(row, col);
+      if (!input) return;
+      if (input.dataset.locked === '1') {
+        selectCell(row, col);
+        return;
+      }
+
+      selectCell(row, col, false);
+      editingCell = { row: row, col: col, original: input.value };
+      var td = findCellTd(row, col);
+      if (td) td.classList.add('cm-cell-editing');
+      input.readOnly = false;
+      input.dataset.cmEditing = '1';
+      input.focus();
+      var len = input.value ? input.value.length : 0;
+      if (input.setSelectionRange) input.setSelectionRange(len, len);
+    }
+
+    function restoreSelection() {
+      if (selectedCell.row == null || selectedCell.col == null) return;
+      var td = findCellTd(selectedCell.row, selectedCell.col);
+      if (td) {
+        var anchor = selectionRange.anchor || selectedCell;
+        var focus = selectionRange.focus || selectedCell;
+        setSelectionRange(anchor, focus, false);
+      }
+      else selectedCell = { row: null, col: null };
+    }
+
+    function parseHtmlTable(html) {
+      if (!html) return null;
+      try {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var table = doc.querySelector('table');
+        if (!table) return null;
+
+        var rows = [];
+        var trs = table.querySelectorAll('tr');
+        Array.prototype.forEach.call(trs, function (tr) {
+          var cells = [];
+          var tds = tr.querySelectorAll('th,td');
+          Array.prototype.forEach.call(tds, function (td) {
+            var text = (td.innerText || td.textContent || '').replace(/\r/g, '').replace(/\u00A0/g, ' ');
+            cells.push(text);
+          });
+          if (cells.length) rows.push(cells);
+        });
+
+        return rows.length ? rows : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function parseClipboardTable(text, html) {
+      var htmlTable = parseHtmlTable(html);
+      if (htmlTable && htmlTable.length) return htmlTable;
+
+      var normalized = (text || '').replace(/\r/g, '');
+      var rows = normalized.split('\n');
+      while (rows.length && rows[rows.length - 1] === '') rows.pop();
+      if (!rows.length) return [];
+      return rows.map(function (rowText) { return rowText.split('\t'); });
+    }
+
+    function applyPastedTable(text, startRow, startCol, html) {
+      if (startRow == null || startCol == null) return;
+      var rows = parseClipboardTable(text, html);
+      if (!rows.length) return;
+
+      var d = state.data || {};
+      if (!d.mainRows) d.mainRows = [];
+      var mainRows = d.mainRows;
+      var changed = false;
+      var historyCaptured = false;
+
+      var neededRowCount = startRow + rows.length;
+      var colCount = lastColCount || ((mainRows[0] && (mainRows[0].values || []).length) || 0);
+      while (mainRows.length < neededRowCount) {
+        var idx = mainRows.length;
+        var vals = [];
+        for (var cadd = 0; cadd < colCount; cadd++) {
+          vals.push(cadd === 0 ? String(idx + 1) : '');
+        }
+        mainRows.push({ row: idx + 1, values: vals });
+      }
+
+      rows.forEach(function (rowCells, rIdx) {
+        var targetRow = startRow + rIdx;
+        var cols = rowCells || [];
+        cols.forEach(function (cellText, cIdx) {
+          var targetCol = startCol + cIdx;
+          var rowValues = mainRows[targetRow] ? (mainRows[targetRow].values || []) : [];
+          if (targetCol >= rowValues.length) return;
+          var input = findCellInput(targetRow, targetCol);
+          if (!input || input.dataset.locked === '1') return;
+          if (!historyCaptured) {
+            pushHistorySnapshot(snapshotRows(mainRows));
+            historyCaptured = true;
+          }
+          var safeText = normalizeCellValue(cellText == null ? '' : cellText, targetCol);
+          rowValues[targetCol] = safeText;
+          input.value = safeText;
+          changed = true;
+        });
+      });
+
+      if (changed) {
+        var rowsNow = snapshotRows(mainRows);
+        state.data.mainRows = rowsNow;
+        pushHistorySnapshot(rowsNow);
+        render();
+        setSelectionRange({ row: startRow, col: startCol }, { row: startRow, col: startCol }, false);
+        queueSaveMain(rowsNow, false, true);
+      }
+    }
+
+    function applyUpdatedData(data, forceRender) {
+      state.data = data;
+      if (forceRender) render();
+      if (data && data.mainRows) {
+        state.data.mainRows = snapshotRows(data.mainRows);
+        pushHistorySnapshot(data.mainRows);
+      }
+    }
+
+    function ensurePdfDialog() {
+      if (pdfDialog) return pdfDialog;
+      var overlay = document.createElement('div');
+      overlay.className = 'cm-pdf-overlay';
+      var card = document.createElement('div');
+      card.className = 'cm-pdf-card';
+      var spinner = document.createElement('div');
+      spinner.className = 'cm-pdf-spinner';
+      var title = document.createElement('div');
+      title.className = 'cm-pdf-title';
+      var message = document.createElement('div');
+      message.className = 'cm-pdf-message';
+      var links = document.createElement('div');
+      links.className = 'cm-pdf-links';
+      var actions = document.createElement('div');
+      actions.className = 'cm-pdf-actions';
+      var cancelBtn = document.createElement('button');
+      cancelBtn.textContent = 'Отмена';
+      cancelBtn.onclick = function () {
+        pdfCancelledId = pdfRequestId;
+        hidePdfDialog();
+      };
+      var closeBtn = document.createElement('button');
+      closeBtn.textContent = 'Закрыть';
+      closeBtn.onclick = hidePdfDialog;
+      var openFolderBtn = document.createElement('button');
+      openFolderBtn.textContent = 'Открыть папку';
+      openFolderBtn.onclick = function () { hidePdfDialog(); openFolder(); };
+      actions.appendChild(cancelBtn);
+      actions.appendChild(closeBtn);
+      actions.appendChild(openFolderBtn);
+      card.appendChild(spinner);
+      card.appendChild(title);
+      card.appendChild(message);
+      card.appendChild(links);
+      card.appendChild(actions);
+      overlay.appendChild(card);
+      overlay.addEventListener('click', function (evt) {
+        if (evt.target === overlay) hidePdfDialog();
+      });
+      document.body.appendChild(overlay);
+      pdfDialog = {
+        overlay: overlay,
+        title: title,
+        message: message,
+        links: links,
+        spinner: spinner,
+        actions: actions,
+        cancelBtn: cancelBtn,
+        closeBtn: closeBtn,
+        openFolderBtn: openFolderBtn
+      };
+      return pdfDialog;
+    }
+
+    function hidePdfDialog() {
+      if (pdfDialog && pdfDialog.overlay) pdfDialog.overlay.style.display = 'none';
+    }
+
+    function showPdfProgress() {
+      var dlg = ensurePdfDialog();
+      dlg.overlay.style.display = 'flex';
+      dlg.spinner.style.display = 'block';
+      dlg.title.textContent = 'PDF формируется...';
+      dlg.message.textContent = 'Пожалуйста, подождите — идёт сборка КП.';
+      dlg.links.innerHTML = '';
+      if (dlg.cancelBtn) dlg.cancelBtn.style.display = 'inline-flex';
+      if (dlg.closeBtn) dlg.closeBtn.style.display = 'none';
+      if (dlg.openFolderBtn) dlg.openFolderBtn.style.display = 'none';
+      dlg.actions.style.display = 'flex';
+    }
+
+    function triggerZipDownload(url) {
+      if (!url) return;
+      var iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = url;
+      document.body.appendChild(iframe);
+      setTimeout(function () {
+        if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      }, 60000);
+    }
+
+    function showPdfReady(info) {
+      var dlg = ensurePdfDialog();
+      dlg.spinner.style.display = 'none';
+      dlg.overlay.style.display = 'flex';
+      dlg.title.textContent = 'Ваши КП готовы';
+      dlg.message.textContent = 'Если скачивание не началось — можно найти и скачать по ссылкам ниже.';
+      dlg.links.innerHTML = '';
+
+      if (info && info.folderUrl) {
+        var folderLink = document.createElement('a');
+        folderLink.href = info.folderUrl;
+        folderLink.target = '_blank';
+        folderLink.textContent = 'Папка с КП';
+        dlg.links.appendChild(folderLink);
+      }
+      if (info && info.downloadUrl) {
+        var downloadLink = document.createElement('a');
+        downloadLink.href = info.downloadUrl;
+        downloadLink.target = '_blank';
+        downloadLink.textContent = info.zipName ? ('Скачать ' + info.zipName) : 'Скачать архив';
+        dlg.links.appendChild(downloadLink);
+        triggerZipDownload(info.downloadUrl);
+      }
+      if (dlg.cancelBtn) dlg.cancelBtn.style.display = 'none';
+      if (dlg.closeBtn) dlg.closeBtn.style.display = 'inline-flex';
+      if (dlg.openFolderBtn) dlg.openFolderBtn.style.display = 'inline-flex';
+      dlg.actions.style.display = 'flex';
+    }
+
+    function sendSaveMain(rows, rebuild, forceRender) {
+      var guard = window.createTabGuard ? window.createTabGuard('commercials') : null;
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (res && res.success) {
+            applyUpdatedData(res.data, forceRender);
+            if (guard && guard.isActive() && forceRender) render();
+          } else if (guard && guard.isActive()) {
+            AppDialog.alert('Не удалось сохранить', 'Коммерческие');
+          }
+        })
+        .withFailureHandler(function (err) {
+          if (guard && guard.isActive()) {
+            AppDialog.alert('Ошибка: ' + err, 'Коммерческие');
+          }
+        })
+        .appBackend({ module: 'commercials', action: 'saveMain', payload: { mainRows: rows, rebuild: rebuild } });
+    }
+
+    function saveMain() {
+      var rows = collectMain();
+      sendSaveMain(rows, false, true);
+    }
+
+    function queueSaveMain(rows, rebuild, immediate) {
+      if (immediate) {
+        sendSaveMain(rows, rebuild, rebuild);
+        pendingMain = { rows: null, rebuild: false };
+        if (mainSaveTimer) clearTimeout(mainSaveTimer);
+        return;
+      }
+
+      pendingMain.rows = rows;
+      pendingMain.rebuild = pendingMain.rebuild || rebuild;
+      if (mainSaveTimer) clearTimeout(mainSaveTimer);
+      mainSaveTimer = setTimeout(function () {
+        if (!pendingMain.rows) return;
+        var forceRender = pendingMain.rebuild;
+        sendSaveMain(pendingMain.rows, false, forceRender);
+        pendingMain = { rows: null, rebuild: false };
+      }, 50);
+    }
+
+    function sendSaveKpTables(tables) {
+      var guard = window.createTabGuard ? window.createTabGuard('commercials') : null;
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (res && res.success && res.data) {
+            state.data = res.data;
+            if (guard && guard.isActive()) updateKpTotalsAll();
+          } else if (guard && guard.isActive()) {
+            AppDialog.alert('Не удалось сохранить КП', 'Коммерческие');
+          }
+        })
+        .withFailureHandler(function (err) {
+          if (guard && guard.isActive()) {
+            AppDialog.alert('Ошибка: ' + err, 'Коммерческие');
+          }
+        })
+        .appBackend({ module: 'commercials', action: 'saveKpTables', payload: { tables: tables || [] } });
+    }
+
+    function queueSaveKpTables() {
+      if (kpSaveTimer) clearTimeout(kpSaveTimer);
+      kpSaveTimer = setTimeout(function () {
+        var tables = (state.data && state.data.kpTables) ? state.data.kpTables : [];
+        sendSaveKpTables(tables);
+      }, 80);
+    }
+
+    function rowsEqual(a, b) {
+      if (!a || !b || a.length !== b.length) return false;
+      for (var i = 0; i < a.length; i++) if ((a[i] || '') !== (b[i] || '')) return false;
+      return true;
+    }
+
+    function updateKpTotal(tableIdx) {
+      var tables = state.data && state.data.kpTables ? state.data.kpTables : [];
+      var tbl = tables[tableIdx];
+      if (!tbl) return;
+      var filtered = filterKpRows_(tbl);
+      var total = filtered.reduce(function (sum, r) {
+        var val = r && r.values && r.values.length > 5 ? parseNumber(r.values[5]) : null;
+        return sum + (val || 0);
+      }, 0);
+      var totalEl = document.getElementById('kp-total-' + tableIdx);
+      if (totalEl) totalEl.textContent = total ? formatPrice(total) : '';
+    }
+
+    function updateKpTotalsAll() {
+      var tables = state.data && state.data.kpTables ? state.data.kpTables : [];
+      for (var i = 0; i < tables.length; i++) updateKpTotal(i);
+    }
+
+    function onMainCellChange(rowIdx) {
+      var rows = collectMain();
+      var rowValues = rows[rowIdx] ? rows[rowIdx].values : [];
+      var prevRow = state.data && state.data.mainRows ? state.data.mainRows[rowIdx] : null;
+      if (prevRow && rowsEqual(prevRow.values || [], rowValues)) return;
+
+      var prevSnapshot = snapshotRows(state.data && state.data.mainRows ? state.data.mainRows : collectMain());
+      pushHistorySnapshot(prevSnapshot);
+
+      state.data.mainRows = snapshotRows(rows);
+      pushHistorySnapshot(state.data.mainRows);
+
+      queueSaveMain(rows, false);
+    }
+
+    function bindMainInputs(mainRows) {
+      ensureClipboardInput();
+      (mainRows || []).forEach(function (r, idx) {
+        (r.values || []).forEach(function (_, cIdx) {
+          var el = document.getElementById('cm-cell-' + idx + '-' + cIdx);
+          if (!el || el.dataset.cmBound) return;
+          el.dataset.cmBound = '1';
+
+          if (el.tagName === 'TEXTAREA') {
+            autoResizeTextarea(el);
+            el.addEventListener('input', function () {
+              autoResizeTextarea(el);
+            });
+          }
+
+          var td = el.closest('td');
+          if (td) {
+            td.addEventListener('mousedown', function (e) {
+              if (editingCell) return;
+              e.preventDefault();
+              isDraggingSelection = true;
+              if (cIdx === 0 && lastColCount) {
+                setSelectionRange({ row: idx, col: 0 }, { row: idx, col: lastColCount - 1 });
+              } else {
+                setSelectionRange({ row: idx, col: cIdx }, { row: idx, col: cIdx });
+              }
+            });
+            td.addEventListener('mouseenter', function () {
+              if (!isDraggingSelection || editingCell) return;
+              setSelectionRange(selectionRange.anchor, { row: idx, col: cIdx }, false);
+            });
+            td.addEventListener('click', function (e) {
+              e.stopPropagation();
+              if (isResizingColumn) return;
+              if (editingCell && editingCell.row === idx && editingCell.col === cIdx) return;
+              if (cIdx === 0 && lastColCount) {
+                setSelectionRange({ row: idx, col: 0 }, { row: idx, col: lastColCount - 1 });
+              } else {
+                setSelectionRange({ row: idx, col: cIdx }, { row: idx, col: cIdx });
+              }
+            });
+            td.addEventListener('dblclick', function (e) {
+              e.stopPropagation();
+              if (isResizingColumn) return;
+              if (editingCell && editingCell.row === idx && editingCell.col === cIdx) return;
+              enterEditCell(idx, cIdx);
+            });
+          } else {
+            el.addEventListener('click', function () { selectCell(idx, cIdx); });
+            el.addEventListener('dblclick', function () { enterEditCell(idx, cIdx); });
+          }
+
+          el.addEventListener('blur', function () {
+            if (editingCell && editingCell.row === idx && editingCell.col === cIdx) {
+              exitEditingCell(true);
+            }
+          });
+
+          el.addEventListener('focus', function () {
+            if (el.dataset.cmEditing === '1') return;
+            selectCell(idx, cIdx, false);
+            ensureClipboardInput().focus();
+          });
+
+          el.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (editingCell && editingCell.row === idx && editingCell.col === cIdx) {
+                exitEditingCell(true);
+              } else {
+                el.blur();
+              }
+            }
+          });
+        });
+      });
+      restoreSelection();
+    }
+
+    function bindKpInputs(kpTables) {
+      (kpTables || []).forEach(function (tbl, tIdx) {
+        var rows = filterKpRows_(tbl);
+        rows.forEach(function (rowData) {
+          (rowData.values || []).forEach(function (_, cIdx) {
+            var el = findKpInput(tIdx, rowData.rowIndex, cIdx);
+            if (!el || el.dataset.kpBound) return;
+            el.dataset.kpBound = '1';
+
+            if (el.tagName === 'TEXTAREA') {
+              autoResizeTextarea(el);
+              el.addEventListener('input', function () {
+                autoResizeTextarea(el);
+              });
+            }
+
+            var td = el.closest('td');
+            if (td) {
+              td.addEventListener('click', function (e) {
+                e.stopPropagation();
+                Array.prototype.forEach.call(document.querySelectorAll('.cm-cell-selected'), function (node) {
+                  node.classList.remove('cm-cell-selected');
+                });
+                td.classList.add('cm-cell-selected');
+              });
+              td.addEventListener('dblclick', function (e) {
+                e.stopPropagation();
+                if (isResizingColumn) return;
+                if (kpEditingCell && kpEditingCell.table === tIdx && kpEditingCell.row === rowData.rowIndex && kpEditingCell.col === cIdx) return;
+                enterKpEditCell(tIdx, rowData.rowIndex, cIdx);
+              });
+            }
+
+            el.addEventListener('focus', function () {
+              if (el.dataset.cmEditing === '1') return;
+              if (td) {
+                Array.prototype.forEach.call(document.querySelectorAll('.cm-cell-selected'), function (node) {
+                  node.classList.remove('cm-cell-selected');
+                });
+                td.classList.add('cm-cell-selected');
+              }
+            });
+            el.addEventListener('dblclick', function (e) {
+              e.stopPropagation();
+              if (isResizingColumn) return;
+              if (kpEditingCell && kpEditingCell.table === tIdx && kpEditingCell.row === rowData.rowIndex && kpEditingCell.col === cIdx) return;
+              enterKpEditCell(tIdx, rowData.rowIndex, cIdx);
+            });
+
+            el.addEventListener('blur', function () {
+              if (kpEditingCell && kpEditingCell.table === tIdx && kpEditingCell.row === rowData.rowIndex && kpEditingCell.col === cIdx) {
+                exitKpEditingCell(true);
+              }
+            });
+
+            el.addEventListener('keydown', function (e) {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (kpEditingCell && kpEditingCell.table === tIdx && kpEditingCell.row === rowData.rowIndex && kpEditingCell.col === cIdx) {
+                  exitKpEditingCell(true);
+                } else {
+                  el.blur();
+                }
+              }
+            });
+          });
+        });
+      });
+    }
+
+    function autoResizeTextarea(el) {
+      if (!el) return;
+      el.style.height = 'auto';
+      el.style.height = el.scrollHeight + 'px';
+    }
+
+    document.addEventListener('mouseup', function () { isDraggingSelection = false; });
+
+    document.addEventListener('keydown', function (e) {
+      var target = e.target;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
+        if (!target.classList.contains('cm-clipboard-input')) return;
+      }
+      if (editingCell && !e.ctrlKey) return;
+      if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        undoLastChange(true);
+        return;
+      }
+      if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+        if (!selectionRange.anchor || !selectionRange.focus) return;
+        e.preventDefault();
+        copySelectionToClipboard();
+        return;
+      }
+      if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
+        var clip = ensureClipboardInput();
+        clip.focus();
+        return;
+      }
+      if (!selectionRange.anchor || !selectionRange.focus) return;
+      var minRow = Math.min(selectionRange.anchor.row, selectionRange.focus.row);
+      var maxRow = Math.max(selectionRange.anchor.row, selectionRange.focus.row);
+      var minCol = Math.min(selectionRange.anchor.col, selectionRange.focus.col);
+      var maxCol = Math.max(selectionRange.anchor.col, selectionRange.focus.col);
+      var isSingleCell = (minRow === maxRow) && (minCol === maxCol);
+
+      if (!editingCell && !e.ctrlKey && !e.metaKey && !e.altKey && isSingleCell) {
+        var targetRow = selectionRange.focus.row;
+        var targetCol = selectionRange.focus.col;
+        var key = e.key;
+        if (key === 'Backspace' || key === 'Delete') {
+          e.preventDefault();
+          beginEditWithValue(targetRow, targetCol, '');
+          return;
+        }
+        if (key && key.length === 1) {
+          e.preventDefault();
+          beginEditWithValue(targetRow, targetCol, key);
+          return;
+        }
+      }
+
+      if (e.key !== 'Backspace' && e.key !== 'Delete') return;
+      e.preventDefault();
+
+      var changed = false;
+      for (var r = minRow; r <= maxRow; r++) {
+        for (var c = minCol; c <= maxCol; c++) {
+          var input = findCellInput(r, c);
+          if (input && input.dataset.locked !== '1' && input.value !== '') {
+            input.value = '';
+            changed = true;
+          }
+        }
+      }
+
+      if (changed) {
+        pushHistorySnapshot(collectMain());
+        queueSaveMain(collectMain(), false);
+      }
+    });
+
+    function snapshotRows(rows) {
+      return (rows || []).map(function (r) { return { row: r.row, values: (r.values || []).slice() }; });
+    }
+
+    function rowsSnapshotEqual(a, b) {
+      if (!a || !b || a.length !== b.length) return false;
+      for (var i = 0; i < a.length; i++) {
+        var av = a[i].values || [];
+        var bv = b[i].values || [];
+        if (av.length !== bv.length) return false;
+        for (var j = 0; j < av.length; j++) {
+          if ((av[j] || '') !== (bv[j] || '')) return false;
+        }
+      }
+      return true;
+    }
+
+    function pushHistorySnapshot(sourceRows) {
+      if (suppressHistory) return;
+      var snapshot = snapshotRows(sourceRows || collectMain());
+      var last = historyIndex >= 0 ? historyStack[historyIndex] : null;
+      if (last && rowsSnapshotEqual(last, snapshot)) return;
+
+      if (historyIndex < historyStack.length - 1) {
+        historyStack = historyStack.slice(0, historyIndex + 1);
+      }
+
+      historyStack.push(snapshot);
+      if (historyStack.length > 50) historyStack.shift();
+      historyIndex = historyStack.length - 1;
+    }
+
+    function applySnapshot(snapshot) {
+      if (!snapshot) return;
+      suppressHistory = true;
+      snapshot.forEach(function (r, idx) {
+        (r.values || []).forEach(function (val, cIdx) {
+          var input = findCellInput(idx, cIdx);
+          if (input) input.value = val || '';
+        });
+      });
+      state.data = state.data || {};
+      state.data.mainRows = snapshotRows(snapshot);
+      suppressHistory = false;
+      queueSaveMain(snapshotRows(snapshot), false, true);
+      restoreSelection();
+    }
+
+    function undoLastChange(immediateSave) {
+      if (historyIndex <= 0) return;
+      historyIndex--;
+      applySnapshot(historyStack[historyIndex]);
+      if (immediateSave) {
+        var snap = historyStack[historyIndex];
+        queueSaveMain(snapshotRows(snap), false, true);
+      }
+    }
+
+    function loadColumnWidths() {
+  try {
+    var stored = localStorage.getItem('cm-col-widths');
+    var parsed = stored ? JSON.parse(stored) : null;
+
+    // нормализуем формат
+    var obj = null;
+    if (Array.isArray(parsed)) obj = { main: parsed };
+    else obj = parsed || { main: [] };
+
+    if (!obj.main) obj.main = [];
+
+    // 👇 столбец "Наименование" = индекс 1
+    var NAME_COL = 1;
+    var MIN_NAME_WIDTH = 300; // 520 * 3
+
+    // если было сохранено меньше — поднимаем до нужного
+    if (!obj.main[NAME_COL] || obj.main[NAME_COL] < MIN_NAME_WIDTH) {
+      obj.main[NAME_COL] = MIN_NAME_WIDTH;
+    }
+
+    return obj;
+  } catch (e) {
+    var a = [];
+    a[1] = 300;
+    return { main: a };
+  }
+
+  function normalizeKpCellValue(value, colIdx) {
+    if (colIdx === 1) return normalizeSpaces(value);
+    if (colIdx === 4 || colIdx === 5) return normalizePriceInput(value);
+    return value == null ? '' : value;
+  }
+}
+
+
+    function saveColumnWidths() {
+      try { localStorage.setItem('cm-col-widths', JSON.stringify(columnWidths || { main: [] })); } catch (e) {}
+    }
+
+    function applyStoredColumnWidthsFor(tableOrSelector, key) {
+      var table = typeof tableOrSelector === 'string' ? document.querySelector(tableOrSelector) : tableOrSelector;
+      if (!table) return;
+      var cols = table.querySelectorAll('col[data-col]');
+      cols.forEach(function (colEl) {
+        var idx = parseInt(colEl.getAttribute('data-col'), 10);
+        var widths = columnWidths && columnWidths[key];
+        var width = widths ? widths[idx] : null;
+        if (width) {
+          colEl.style.width = width + 'px';
+        } else {
+          var measured = Math.round(colEl.getBoundingClientRect().width);
+          if (measured) {
+            if (!columnWidths[key]) columnWidths[key] = [];
+            columnWidths[key][idx] = measured;
+          }
+        }
+      });
+    }
+
+    function bindColumnResizingFor(tableOrSelector, key) {
+      var table = typeof tableOrSelector === 'string' ? document.querySelector(tableOrSelector) : tableOrSelector;
+      if (!table) return;
+      var active = null;
+
+      function onMove(e) {
+        if (!active) return;
+        var delta = e.clientX - active.startX;
+        var newWidth = Math.max(60, active.startWidth + delta);
+        if (!columnWidths[key]) columnWidths[key] = [];
+        columnWidths[key][active.col] = newWidth;
+        applyStoredColumnWidthsFor(table, key);
+      }
+
+      function onUp() {
+        if (active) saveColumnWidths();
+        active = null;
+        isResizingColumn = false;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+
+      Array.prototype.forEach.call(table.querySelectorAll('.cm-resizer'), function (resizer) {
+        resizer.onmousedown = function (e) {
+          e.preventDefault();
+          var col = parseInt(resizer.getAttribute('data-col'), 10);
+          var colEl = table.querySelector('col[data-col="' + col + '"]');
+          var startWidth = colEl ? colEl.getBoundingClientRect().width : 0;
+          if (!startWidth) {
+            var th = table.querySelector('thead th:nth-child(' + (col + 1) + ')');
+            startWidth = th ? th.getBoundingClientRect().width : 0;
+          }
+          active = { col: col, startX: e.clientX, startWidth: startWidth };
+          isResizingColumn = true;
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        };
+      });
+    }
+
+    function clearMain() {
+      AppDialog.confirm('Очистить содержимое основной таблицы (нумерация сохранится)?', function () {
+        var guard = window.createTabGuard ? window.createTabGuard('commercials') : null;
+        google.script.run
+          .withSuccessHandler(function (res) {
+            state.data = res.data;
+            if (guard && guard.isActive()) render();
+          })
+          .withFailureHandler(function (err) {
+            if (guard && guard.isActive()) {
+              AppDialog.alert('Ошибка: ' + err, 'Коммерческие');
+            }
+          })
+          .appBackend({ module: 'commercials', action: 'clearMain', payload: {} });
+      });
+    }
+
+    function addRow() {
+      var d = state.data || {};
+      if (!d.mainRows) d.mainRows = [];
+      var mainRows = d.mainRows;
+      var colCount = lastColCount || ((mainRows[0] && (mainRows[0].values || []).length) || 0);
+      if (!colCount) return;
+
+      var idx = mainRows.length;
+      var values = [];
+      for (var c = 0; c < colCount; c++) {
+        values.push(c === 0 ? String(idx + 1) : '');
+      }
+
+      mainRows.push({ row: idx + 1, values: values });
+      state.data.mainRows = snapshotRows(mainRows);
+      pushHistorySnapshot(state.data.mainRows);
+      render();
+      queueSaveMain(state.data.mainRows, false, true);
+    }
+
+    function collectParamsPayload() {
+      return {
+        params: {
+          j3: normalizeParamValue(document.getElementById('cmJ3').value),
+          j4: normalizeParamValue(document.getElementById('cmJ4').value),
+          j5: normalizeParamValue(document.getElementById('cmJ5').value),
+          j6: normalizeParamValue(document.getElementById('cmJ6').value)
+        },
+        templates: {
+          kp1: document.getElementById('cmTpl1').value,
+          kp2: document.getElementById('cmTpl2').value,
+          kp3: document.getElementById('cmTpl3').value
+        },
+        organization: (document.getElementById('cmOrg').value || '').trim()
+      };
+    }
+
+    function paramsPayloadChanged(payload) {
+      var d = state.data || {};
+      var params = d.params || {};
+      var templates = d.templates || {};
+      var org = (d.organization || '').trim();
+      function same(a, b) { return (a == null ? '' : String(a)) === (b == null ? '' : String(b)); }
+
+      if (!same(payload.params.j3, params.j3)) return true;
+      if (!same(payload.params.j4, params.j4)) return true;
+      if (!same(payload.params.j5, params.j5)) return true;
+      if (!same(payload.params.j6, params.j6)) return true;
+      if (!same(payload.templates.kp1, templates.kp1)) return true;
+      if (!same(payload.templates.kp2, templates.kp2)) return true;
+      if (!same(payload.templates.kp3, templates.kp3)) return true;
+      if (!same(payload.organization, org)) return true;
+      return false;
+    }
+
+    function paramsNeedRebuild(payload) {
+      var d = state.data || {};
+      var templates = d.templates || {};
+      var org = (d.organization || '').trim();
+      function same(a, b) { return (a == null ? '' : String(a)) === (b == null ? '' : String(b)); }
+
+      if (!same(payload.organization, org)) return true;
+      if (!same(payload.templates.kp1, templates.kp1)) return true;
+      if (!same(payload.templates.kp2, templates.kp2)) return true;
+      if (!same(payload.templates.kp3, templates.kp3)) return true;
+      return false;
+    }
+
+    function syncSelectOptions(el, options, selected) {
+      if (!el) return;
+      var needRefresh = false;
+      if (el.options.length !== options.length) {
+        needRefresh = true;
+      } else {
+        for (var i = 0; i < options.length; i++) {
+          if (el.options[i].value !== options[i]) { needRefresh = true; break; }
+        }
+      }
+
+      if (needRefresh) {
+        el.innerHTML = buildOptions(options, selected);
+      }
+      if (el.value !== selected) el.value = selected || '';
+    }
+
+    function syncToolbarValues(data) {
+      var d = data || state.data || {};
+      var params = d.params || {};
+      var templates = d.templates || {};
+      var templateOptions = d.templateOptions || [];
+
+      function setVal(id, val) {
+        var el = document.getElementById(id);
+        var safe = normalizeParamValue(val);
+        if (el && el.value !== safe) el.value = safe;
+      }
+
+      setVal('cmJ3', params.j3);
+      setVal('cmJ4', params.j4);
+      setVal('cmJ5', params.j5);
+      setVal('cmJ6', params.j6);
+      setVal('cmOrg', d.organization || '');
+
+      syncSelectOptions(document.getElementById('cmTpl1'), templateOptions, templates.kp1);
+      syncSelectOptions(document.getElementById('cmTpl2'), templateOptions, templates.kp2);
+      syncSelectOptions(document.getElementById('cmTpl3'), templateOptions, templates.kp3);
+    }
+
+    function saveParams(rebuild, preparedPayload, attempt) {
+      var payload = preparedPayload || collectParamsPayload();
+      if (!paramsPayloadChanged(payload)) return;
+
+      payload.rebuild = rebuild !== false;
+      // оптимистично обновляем локальный стейт, чтобы UI не мигал
+      if (state.data && state.data.params) {
+        state.data.params.j3 = payload.params.j3;
+        state.data.params.j4 = payload.params.j4;
+        state.data.params.j5 = payload.params.j5;
+        state.data.params.j6 = payload.params.j6;
+        state.data.organization = payload.organization;
+        state.data.templates = state.data.templates || {};
+        state.data.templates.kp1 = payload.templates.kp1;
+        state.data.templates.kp2 = payload.templates.kp2;
+        state.data.templates.kp3 = payload.templates.kp3;
+      }
+
+      var requestId = ++paramsRequestId;
+      var guard = window.createTabGuard ? window.createTabGuard('commercials') : null;
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (requestId !== paramsRequestId) return;
+          if (!res || !res.success || !res.data) {
+            if (!attempt) {
+              setTimeout(function () { saveParams(rebuild, payload, 1); }, 200);
+              return;
+            }
+            if (guard && guard.isActive()) {
+              AppDialog.alert('Не удалось сохранить параметры', 'Коммерческие');
+            }
+            return;
+          }
+          applyUpdatedData(res.data, payload.rebuild);
+          if (guard && guard.isActive()) {
+            if (!payload.rebuild) syncToolbarValues(res.data);
+          }
+        })
+        .withFailureHandler(function (err) {
+          if (requestId !== paramsRequestId) return;
+          if (!attempt) {
+            // ещё одна попытка через небольшой интервал
+            setTimeout(function () { saveParams(rebuild, payload, 1); }, 200);
+            return;
+          }
+          if (guard && guard.isActive()) {
+            AppDialog.alert('Ошибка: ' + err, 'Коммерческие');
+          }
+        })
+        .appBackend({ module: 'commercials', action: 'saveParams', payload: payload });
+    }
+
+    function queueSaveParams(rebuild) {
+      var payload = collectParamsPayload();
+      if (!paramsPayloadChanged(payload)) return;
+      if (paramsSaveTimer) clearTimeout(paramsSaveTimer);
+      paramsSaveTimer = setTimeout(function () {
+        var shouldRebuild = typeof rebuild === 'boolean' ? rebuild : paramsNeedRebuild(payload);
+        saveParams(shouldRebuild, payload);
+      }, 200);
+    }
+
+    function bindParamsInputs() {
+      ['cmJ3', 'cmJ4', 'cmJ5', 'cmJ6'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el && !el.dataset.cmBound) {
+          el.dataset.cmBound = '1';
+          var handleInput = function () { queueSaveParams(false); };
+          var handleFinalize = function () {
+            el.value = normalizeParamValue(el.value);
+            queueSaveParams(false);
+          };
+          el.addEventListener('input', handleInput);
+          el.addEventListener('change', handleFinalize);
+          el.addEventListener('blur', handleFinalize);
+          el.addEventListener('focus', function () { clearSelectionRange(); });
+        }
+      });
+
+      ['cmTpl1', 'cmTpl2', 'cmTpl3'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el && !el.dataset.cmBound) {
+          el.dataset.cmBound = '1';
+          el.addEventListener('change', function () { queueSaveParams(); });
+          el.addEventListener('focus', function () { clearSelectionRange(); });
+        }
+      });
+
+      var orgInput = document.getElementById('cmOrg');
+      if (orgInput && !orgInput.dataset.cmBound) {
+        orgInput.dataset.cmBound = '1';
+        orgInput.addEventListener('input', function () { queueSaveParams(); });
+        orgInput.addEventListener('change', function () { queueSaveParams(); });
+        orgInput.addEventListener('blur', function () { queueSaveParams(); });
+        orgInput.addEventListener('focus', function () { clearSelectionRange(); });
+      }
+    }
+
+    // ✅ Комбобокс: показываем список ТОЛЬКО когда поле в фокусе.
+    // Закрываем на blur и клики вне.
+    function bindOrganizationCombo(options) {
+      var input = document.getElementById('cmOrg');
+      var list = document.getElementById('cmOrgList');
+      var wrapper = document.querySelector('.cm-org-combo');
+      if (!input || !list || !wrapper || input.dataset.cmOrgBound) return;
+      input.dataset.cmOrgBound = '1';
+
+      if (list.parentNode !== document.body) {
+        document.body.appendChild(list);
+      }
+      list.classList.add('cm-org-list-popup');
+
+      function closeList() { list.style.display = 'none'; }
+
+      function positionList() {
+        var rect = input.getBoundingClientRect();
+        var width = Math.max(rect.width, 240);
+        list.style.width = width + 'px';
+        list.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)) + 'px';
+        list.style.top = Math.min(rect.bottom + 6, window.innerHeight - 12) + 'px';
+      }
+
+      function renderList() {
+        // показываем только если реально фокус в поле
+        if (document.activeElement !== input) return;
+
+        var q = (input.value || '').trim().toLowerCase();
+        var html = '';
+        var shown = 0;
+
+        (options || []).forEach(function (opt) {
+          if (!opt) return;
+          var text = opt.toString();
+          if (q && text.toLowerCase().indexOf(q) === -1) return;
+          if (shown >= 50) return;
+          var isSelected = (input.value || '').trim().toLowerCase() === text.toLowerCase();
+          html += '<div class="combo-item' + (isSelected ? ' selected' : '') + '" data-val="' + escapeAttr(text) + '">' +
+            '<span class="combo-icon">📄</span>' +
+            '<span>' + escapeHtml(text) + '</span>' +
+            '</div>';
+          shown++;
+        });
+
+        if (!html) html = '<div class="combo-item">Ничего не найдено</div>';
+
+        list.innerHTML = html;
+        positionList();
+        list.style.display = 'block';
+        if (window.ensureOverlayVisible) window.ensureOverlayVisible(list, input);
+
+        Array.prototype.forEach.call(list.querySelectorAll('.combo-item'), function (el) {
+          el.onmousedown = function (e) {
+            // чтобы blur не успел закрыть список до выбора
+            e.preventDefault();
+          };
+          el.onclick = function () {
+            var val = el.getAttribute('data-val');
+            if (val) {
+              input.value = val;
+              queueSaveParams();
+            }
+            closeList();
+            input.focus();
+          };
+        });
+      }
+
+      input.addEventListener('focus', renderList);
+      input.addEventListener('click', renderList);
+      input.addEventListener('input', renderList);
+
+      window.addEventListener('resize', function () {
+        if (list.style.display === 'block') positionList();
+      });
+
+      input.addEventListener('blur', function () {
+        // небольшой таймаут, чтобы успевал клик по элементу списка
+        setTimeout(closeList, 120);
+      });
+
+      if (!document.body.dataset.cmOrgClickBound) {
+        document.body.dataset.cmOrgClickBound = '1';
+        document.addEventListener('mousedown', function (e) {
+          var currentWrapper = document.querySelector('.cm-org-combo');
+          if (!currentWrapper) return;
+          if (!currentWrapper.contains(e.target)) closeList();
+        });
+      }
+    }
+
+    function runCreatePdf() {
+      showPdfProgress();
+      pdfRequestId += 1;
+      var requestId = pdfRequestId;
+      var guard = window.createTabGuard ? window.createTabGuard('commercials') : null;
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (requestId === pdfCancelledId) return;
+          if (!res || !res.success || !res.data) {
+            if (guard && guard.isActive()) {
+              hidePdfDialog();
+              AppDialog.alert('Не удалось создать PDF.', 'Коммерческие');
+            }
+            return;
+          }
+          if (guard && guard.isActive()) {
+            showPdfReady(res.data);
+          }
+        })
+        .withFailureHandler(function (err) {
+          if (requestId === pdfCancelledId) return;
+          if (guard && guard.isActive()) {
+            hidePdfDialog();
+            AppDialog.alert('Ошибка: ' + err, 'Коммерческие');
+          }
+        })
+        .appBackend({ module: 'commercials', action: 'createPdfs', payload: {} });
+    }
+
+    function createPdf() {
+      var hasOrg = state.data && state.data.organization && state.data.organization.toString().trim();
+      if (!hasOrg) {
+        AppDialog.confirm('Организация не заполнена, уверены, что хотите продолжить?', function () {
+          runCreatePdf();
+        });
+        return;
+      }
+      runCreatePdf();
+    }
+
+    function refresh() { fetchData(); }
+
+    function openSheet() {
+      var d = state.data || {};
+      if (d.sheetUrl) window.open(d.sheetUrl, '_blank');
+    }
+
+    function openFolder() {
+      var d = state.data || {};
+      if (d.folderUrl) window.open(d.folderUrl, '_blank');
+    }
+
+    function goFullscreen() {
+      var el = document.documentElement;
+      if (el.requestFullscreen) el.requestFullscreen();
+    }
+
+    function preload() {
+      if (preloadedData) return Promise.resolve();
+      return new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (res) {
+            if (res && res.success) {
+              preloadedData = res.data;
+            }
+            markReady();
+            resolve();
+          })
+          .withFailureHandler(function () {
+            markReady();
+            resolve();
+          })
+          .appBackend({ module: 'commercials', action: 'load', payload: {} });
+      });
+    }
+
+    function createKp() {
+      var rows = collectMain();
+      var payload = collectParamsPayload();
+      if (!paramsPayloadChanged(payload)) {
+        sendSaveMain(rows, true, true);
+        return;
+      }
+
+      payload.rebuild = false;
+      var guard = window.createTabGuard ? window.createTabGuard('commercials') : null;
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (!res || !res.success || !res.data) {
+            if (guard && guard.isActive()) {
+              AppDialog.alert('Не удалось сохранить параметры', 'Коммерческие');
+            }
+            return;
+          }
+          applyUpdatedData(res.data, false);
+          sendSaveMain(rows, true, true);
+        })
+        .withFailureHandler(function (err) {
+          if (guard && guard.isActive()) {
+            AppDialog.alert('Ошибка: ' + err, 'Коммерческие');
+          }
+        })
+        .appBackend({ module: 'commercials', action: 'saveParams', payload: payload });
+    }
+
+    return {
+      load: load,
+      onResume: function () { if (state.data) render(); },
+      refresh: refresh,
+      createKp: createKp,
+      saveParams: saveParams,
+      createPdf: createPdf,
+      clearMain: clearMain,
+      addRow: addRow,
+      openSheet: openSheet,
+      openFolder: openFolder,
+      goFullscreen: goFullscreen,
+      preload: preload,
+      undo: undoLastChange
+    };
+  })();
+</script>

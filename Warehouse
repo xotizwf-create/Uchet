@@ -1,0 +1,1084 @@
+// Warehouse.gs
+var Warehouse = (function () {
+
+  var SHEET_BALANCES = Core.config.sheets.stockBalance;
+  var SHEET_INCOMES  = Core.config.sheets.stockIncome;
+  var SHEET_MOVES    = Core.config.sheets.stockMoves;
+  var SHEET_EXPENSES = Core.config.sheets.stockExpenses;
+  var SHEET_ITEMS    = Core.config.sheets.stockItems; // регистр товаров
+
+  // если листа нет — создаём с такими шапками
+  var HEADERS_BALANCES = ['Дата', 'Наименование', 'Остаток'];
+
+  // Приходы:
+  // Наименование | Номер счета | Дата прихода | Количество | Ед. изм. | ID | Товар на складе
+  var HEADERS_INCOMES  = [
+    'Наименование',
+    'Номер счета',
+    'Дата прихода',
+    'Количество',
+    'Ед. изм.',
+    'ID',
+    'Товар на складе'
+  ];
+
+  // Расходы:
+  // Организация | Дата | Товар | Количество | ID
+  var HEADERS_EXPENSES = [
+    'Организация',
+    'Дата',
+    'Товар',
+    'Количество',
+    'ID'
+  ];
+
+  var EXPENSES_CUTOFF = new Date(2025, 11, 6); // 06.12.2025
+
+  // Движения склада:
+  // Дата движения | Номер контракта/счета | Товар | Тип операции | Количество
+  var HEADERS_MOVES    = [
+    'Дата движения',
+    'Номер контракта/счета',
+    'Товар',
+    'Тип операции',
+    'Количество'
+  ];
+
+  // Справочник товаров:
+  // Наименование | Ед. изм. | ID | Активен
+  var HEADERS_ITEMS = [
+    'Наименование',
+    'Ед. изм.',
+    'ID',
+    'Активен'
+  ];
+
+  var itemsIndexCache = null;
+  var sheetCache = {};
+
+  function normalizeItemName(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).trim();
+  }
+
+  function normalizeInStockValue(value) {
+    if (value === '' || value == null) return true;
+    if (value === true || value === false) return value;
+    var str = String(value).trim().toLowerCase();
+    if (str === 'true' || str === 'yes' || str === '1') return true;
+    if (str === 'false' || str === 'no' || str === '0') return false;
+    return true;
+  }
+
+  function getSheetBalances() {
+    var sheet = Core.ensureSheet(SHEET_BALANCES, HEADERS_BALANCES);
+    Core.ensureHeaders(sheet, HEADERS_BALANCES);
+    return sheet;
+  }
+
+  function getSheetIncomes() {
+    var sheet = Core.ensureSheet(SHEET_INCOMES, HEADERS_INCOMES);
+    Core.ensureHeaders(sheet, HEADERS_INCOMES);
+    return sheet;
+  }
+
+  function getSheetExpenses() {
+    var sheet = Core.ensureSheet(SHEET_EXPENSES, HEADERS_EXPENSES);
+    Core.ensureHeaders(sheet, HEADERS_EXPENSES);
+    return sheet;
+  }
+
+  function getSheetMoves() {
+    var sheet = Core.ensureSheet(SHEET_MOVES, HEADERS_MOVES);
+    Core.ensureHeaders(sheet, HEADERS_MOVES);
+    return sheet;
+  }
+
+  function getSheetItems() {
+    var sheet = Core.ensureSheet(SHEET_ITEMS, HEADERS_ITEMS);
+    Core.ensureHeaders(sheet, HEADERS_ITEMS);
+    return sheet;
+  }
+
+  function clearItemsIndexCache() {
+    itemsIndexCache = null;
+  }
+
+  function clearSheetCache(key) {
+    if (key) {
+      delete sheetCache[key];
+      return;
+    }
+    sheetCache = {};
+  }
+
+  function getIncomesData() {
+    return getSheetData(getSheetIncomes, 'incomes', HEADERS_INCOMES.length);
+  }
+
+  function getMovesData() {
+    return getSheetData(getSheetMoves, 'moves', HEADERS_MOVES.length);
+  }
+
+  function getExpensesData() {
+    return getSheetData(getSheetExpenses, 'expenses', HEADERS_EXPENSES.length);
+  }
+
+  function getItemsData() {
+    return getSheetData(getSheetItems, 'items', HEADERS_ITEMS.length);
+  }
+
+  function getSheetData(getter, cacheKey, width) {
+    if (cacheKey && sheetCache[cacheKey]) {
+      return sheetCache[cacheKey];
+    }
+    var sheet = getter();
+    var values = Core.readSheetValues(sheet, width);
+    var data = { sheet: sheet, values: values };
+    if (cacheKey) sheetCache[cacheKey] = data;
+    return data;
+  }
+
+  function getItemsIndex() {
+    if (itemsIndexCache) return itemsIndexCache;
+    var data = getSheetData(getSheetItems, 'items', HEADERS_ITEMS.length);
+    var values = data.values;
+
+    var byName = {};
+    var byId   = {};
+    var list   = [];
+
+    for (var i = 1; i < values.length; i++) {
+      var row = values[i];
+      var name = normalizeItemName(row[0]);
+      if (!name) continue;
+
+      var item = {
+        name: name,
+        unit: row[1] || '',
+        id:   row[2],
+        active: row[3]
+      };
+
+      list.push(item);
+      byName[name] = item;
+      if (item.id) {
+        byId[item.id] = item;
+      }
+    }
+
+    itemsIndexCache = { byName: byName, byId: byId, list: list };
+    return itemsIndexCache;
+  }
+
+  // ========= ВХОД ИЗ appBackend =========
+  function handle(request) {
+    var p = request.payload || {};
+    switch (request.action) {
+      // Остатки
+      case 'balancesByDate':
+        try {
+          return { success: true, data: balancesByDate(p.date) };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      // Приходы
+      case 'listIncomes':
+        try {
+          return { success: true, data: listIncomes() };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      // Расходы
+      case 'listExpenses':
+        try {
+          return { success: true, data: listExpenses() };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'deleteExpense':
+        try {
+          deleteExpense(p);
+          return { success: true };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'createIncome':
+        try {
+          createIncome(p);
+          return { success: true };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'updateIncome':
+        try {
+          updateIncome(p);
+          return { success: true };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'deleteIncome':
+        try {
+          deleteIncome(p.id);
+          return { success: true };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'getIncomeById':
+        try {
+          return { success: true, data: getIncomeById(p.id) };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      // Движения склада
+      case 'listMoves':
+        try {
+          return { success: true, data: listMoves() };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      // Товары (регистр)
+      case 'listItems':
+        try {
+          return { success: true, data: listItems() };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'createItem':
+        try {
+          createItem(p);
+          return { success: true };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'updateItem':
+        try {
+          updateItem(p);
+          return { success: true };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'deleteItem':
+        try {
+          deleteItem(p.id);
+          return { success: true };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      case 'getItemById':
+        try {
+          return { success: true, data: getItemById(p.id) };
+        } catch (e) {
+          Core.error(e);
+          return { success: false, error: e.message };
+        }
+
+      default:
+        throw new Error('Unknown warehouse action: ' + request.action);
+    }
+  }
+
+  // ========= ОСТАТКИ НА ДАТУ =========
+  function balancesByDate(dateStr) {
+    // Обновляем расходы и движения, чтобы учесть все операции до расчёта остатков
+    refreshExpensesData();
+
+    var endDate = dateStr ? new Date(dateStr) : new Date();
+    // Устанавливаем время на конец дня (23:59:59.999), чтобы включить все операции этого дня
+    endDate = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 23, 59, 59, 999);
+    var endTime = endDate.getTime();
+
+    var incomesData  = getIncomesData();
+    var expensesData = getExpensesData();
+
+    // Приходы: [Наименование, №счета, Дата прихода, Кол-во, Ед. изм., ID, Товар на складе]
+    var incomeValues = incomesData.values;
+    // Расходы: [Организация, Дата, Товар, Количество, ID]
+    var expenseValues = expensesData.values;
+
+    var map = {}; // item -> qty
+
+    // 1) суммируем приходы до даты
+    for (var i = 1; i < incomeValues.length; i++) {
+      var row = incomeValues[i];
+      var name = normalizeItemName(row[0]);
+      if (!name) continue;
+
+      var dateVal = row[2];
+      var d = normalizeDate(dateVal);
+      if (!d) continue;
+      var dTime = d.getTime();
+      if (dTime > endTime) continue;
+
+      var inStock = normalizeInStockValue(row[6]);
+      if (!inStock) continue;
+
+      var qty = row[3];
+      if (qty === '' || qty == null) qty = 0;
+      qty = Number(qty) || 0;
+
+      if (!map[name]) map[name] = 0;
+      map[name] += qty;
+    }
+
+    // 2) вычитаем расходы до даты
+    for (var j = 1; j < expenseValues.length; j++) {
+      var mrow = expenseValues[j];
+      var item = normalizeItemName(mrow[2]);
+      if (!item) continue;
+
+      var mdateVal = mrow[1];
+      var md = normalizeDate(mdateVal);
+      if (!md) continue;
+      var mdTime = md.getTime();
+      if (mdTime > endTime) continue;
+
+      var mqty = mrow[3];
+      if (mqty === '' || mqty == null) mqty = 0;
+      mqty = Number(mqty) || 0;
+
+      if (!map[item]) map[item] = 0;
+      map[item] -= mqty;
+    }
+
+    // 3) тянем все товары из регистра
+    var itemsValues = getItemsData().values;
+    var result = [];
+    var seen = {};
+
+    // [Наименование, Ед. изм., ID, Активен]
+    for (var k = 1; k < itemsValues.length; k++) {
+      var rowIt = itemsValues[k];
+      var itemName = normalizeItemName(rowIt[0]);
+      if (!itemName) continue;
+
+      var qtyForItem = (map[itemName] != null) ? map[itemName] : 0;
+      result.push({
+        date: formatDateISO(endDate),
+        item: itemName,
+        qty: qtyForItem
+      });
+      seen[itemName] = true;
+    }
+
+    // 4) сортировка
+    result.sort(function (a, b) {
+      if (a.item < b.item) return -1;
+      if (a.item > b.item) return 1;
+      return 0;
+    });
+
+    return result;
+  }
+
+  // нормализация даты
+  function normalizeDate(val) {
+    if (!val) return null;
+
+    // Приводим любые строки/объекты даты к локальной дате без сдвигов часового пояса
+    // чтобы фильтры по дате работали корректно и не "съедали" день.
+    var d;
+
+    if (val instanceof Date) {
+      d = new Date(val.getFullYear(), val.getMonth(), val.getDate());
+    } else {
+      var str = String(val).trim();
+      var iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(str);
+      if (iso) {
+        d = new Date(+iso[1], +iso[2] - 1, +iso[3]);
+      } else {
+        var ru = /^(\d{2})[.\/-](\d{2})[.\/-](\d{4})$/.exec(str);
+        if (ru) {
+          d = new Date(+ru[3], +ru[2] - 1, +ru[1]);
+        } else {
+          d = new Date(val);
+        }
+      }
+    }
+
+    if (isNaN(d)) return null;
+    return d;
+  }
+
+  // ========= ПОМОЩНИКИ ПО ТОВАРАМ =========
+
+  function findItemByName(name) {
+    var normalized = normalizeItemName(name);
+    if (!normalized) return null;
+    var index = getItemsIndex();
+    return index.byName[normalized] || null;
+  }
+
+  function requireExistingItemName(name) {
+    var item = findItemByName(name);
+    if (!item) {
+      throw new Error(
+        'Товар "' + name + '" отсутствует в перечне товаров. ' +
+        'Сначала заполните информацию о товаре в реестре, затем возвращайтесь в эту вкладку.'
+      );
+    }
+    return item;
+  }
+
+  function getItemUnitByName(name) {
+    var it = findItemByName(name);
+    return it ? (it.unit || '') : '';
+  }
+
+  function hasItemMovements(itemName) {
+    var normalized = normalizeItemName(itemName);
+    if (!normalized) return false;
+
+    var incomes = getIncomesData().values; // [Наименование, ...]
+    for (var i = 1; i < incomes.length; i++) {
+      if (normalizeItemName(incomes[i][0]) === normalized) return true;
+    }
+
+    var expenses = getExpensesData().values; // [Организация, Дата, Товар, Кол-во, ID]
+    for (var j = 1; j < expenses.length; j++) {
+      if (normalizeItemName(expenses[j][2]) === normalized) return true;
+    }
+
+    return false;
+  }
+
+  // ========= ПРИХОДЫ =========
+
+  function listIncomes() {
+    var data = getIncomesData();
+    var sheet = data.sheet;
+    var values = data.values;
+    var res = [];
+
+    if (values.length <= 1) return [];
+
+    var itemsIndex = getItemsIndex();
+    var body = values.slice(1);
+    var updated = false;
+
+    for (var i = 0; i < body.length; i++) {
+      var row = body[i];
+      if (!row[0] && !row[1] && !row[2] && !row[3]) continue;
+
+      var dateVal = row[2];
+      var dateStr = normalizeToISO(dateVal);
+
+      var itemName = normalizeItemName(row[0]);
+      var registryItem = itemsIndex.byName[itemName];
+      var registryUnit = registryItem ? (registryItem.unit || '') : '';
+      var unitVal = row[4] || registryUnit;
+      if (registryUnit && unitVal !== registryUnit) {
+        unitVal = registryUnit;
+        row[4] = registryUnit;
+        updated = true;
+      }
+
+      // гарантируем ID одним проходом
+      var id = row[5];
+      if (!id) {
+        id = Utilities.getUuid();
+        row[5] = id;
+        updated = true;
+      }
+
+      var inStockValue = normalizeInStockValue(row[6]);
+      if (row[6] === '' || row[6] == null) {
+        row[6] = inStockValue;
+        updated = true;
+      }
+
+      res.push({
+        id: id,
+        item: itemName,
+        invoiceNumber: row[1],
+        date: dateStr, // Убедимся, что это строка в формате YYYY-MM-DD
+        qty: row[3],
+        unit: unitVal,
+        inStock: inStockValue
+      });
+    }
+
+    if (updated) {
+      sheet.getRange(2, 1, body.length, 7).setValues(body);
+      clearSheetCache('incomes');
+    }
+
+    return res;
+  }
+
+  function createIncome(p) {
+    if (!p) return;
+    if (!p.item) {
+      throw new Error('Наименование товара обязательно для прихода.');
+    }
+
+    p.item = normalizeItemName(p.item);
+    if (!p.item) {
+      throw new Error('Наименование товара обязательно для прихода.');
+    }
+
+    // ПРОВЕРКА: товар должен существовать в реестре
+    var itemInfo = requireExistingItemName(p.item);
+
+    var incomesSheet = getSheetIncomes();
+    var movesSheet   = getSheetMoves();
+
+    var id = Utilities.getUuid();
+
+    var dateVal = p.date ? new Date(p.date) : '';
+    var qtyVal  = (p.qty !== '' && p.qty != null) ? Number(p.qty) : '';
+
+    var unitVal = itemInfo.unit || '';
+
+    // Приходы: [Наименование, Номер счета, Дата прихода, Количество, Ед. изм., ID, Товар на складе]
+    incomesSheet.appendRow([
+      p.item || '',
+      p.invoiceNumber || '',
+      dateVal,
+      qtyVal,
+      unitVal,
+      id,
+      normalizeInStockValue(p.inStock)
+    ]);
+
+    // Движения: [Дата движения, Номер контракта/счета, Товар, Тип операции, Количество]
+    movesSheet.appendRow([
+      dateVal,
+      p.invoiceNumber || '',
+      p.item || '',
+      'Приход',
+      qtyVal
+    ]);
+
+    clearSheetCache('incomes');
+    clearSheetCache('moves');
+  }
+
+  function findIncomeRowById(id) {
+    if (!id) return null;
+    var data = getIncomesData();
+    var sheet = data.sheet;
+    var values = data.values;
+    for (var i = 1; i < values.length; i++) {
+      if (values[i][5] === id) { // ID в 6-й колонке
+        return { sheet: sheet, rowIndex: i + 1, row: values[i] };
+      }
+    }
+    return null;
+  }
+
+  // Поиск строки движения, соответствующей приходу
+  function findMoveRowForIncome(oldRow) {
+    var movesData = getMovesData();
+    var movesSheet = movesData.sheet;
+    var moves = movesData.values;
+
+    // oldRow: [Наименование, Номер счета, Дата прихода, Кол-во, Ед. изм., ID]
+    var oldItem  = oldRow[0];
+    var oldInv   = oldRow[1];
+    var oldDate  = oldRow[2];
+    var oldQty   = Number(oldRow[3]) || 0;
+    var oldDateNorm = normalizeDate(oldDate);
+
+    for (var i = 1; i < moves.length; i++) {
+      var r = moves[i];
+      if (!r[0] && !r[2]) continue;
+
+      var opType = r[3];
+      if (opType !== 'Приход') continue;
+
+      var mInv  = r[1];
+      var mItem = r[2];
+      var mQty  = Number(r[4]) || 0;
+      var mDateNorm = normalizeDate(r[0]);
+
+      // Сравниваем номер счета, наименование, дату и количество
+      if (mInv != oldInv) continue;
+      if (mItem != oldItem) continue;
+      if (oldDateNorm || mDateNorm) {
+        if (!oldDateNorm || !mDateNorm || mDateNorm.getTime() !== oldDateNorm.getTime()) continue;
+      }
+      if (mQty !== oldQty) continue;
+
+      return { sheet: movesSheet, rowIndex: i + 1 };
+    }
+
+    return null;
+  }
+
+  function updateIncome(p) {
+    if (!p || !p.id) throw new Error('id is required for updateIncome');
+
+    var found = findIncomeRowById(p.id);
+    if (!found) throw new Error('Приход с таким ID не найден');
+
+    p.item = normalizeItemName(p.item);
+    if (!p.item) {
+      throw new Error('Наименование товара обязательно для прихода.');
+    }
+
+    // ПРОВЕРКА: товар должен существовать в реестре
+    var itemInfo = requireExistingItemName(p.item);
+
+    var sheet  = found.sheet;
+    var oldRow = found.row;
+
+    var dateVal = p.date ? new Date(p.date) : '';
+    var qtyVal  = (p.qty !== '' && p.qty != null) ? Number(p.qty) : '';
+
+    var unitVal = itemInfo.unit || '';
+
+    var newRow = [
+      p.item || '',
+      p.invoiceNumber || '',
+      dateVal,
+      qtyVal,
+      unitVal,
+      p.id,
+      normalizeInStockValue(p.inStock)
+    ];
+
+    sheet.getRange(found.rowIndex, 1, 1, 7).setValues([newRow]);
+
+    var moveFound = findMoveRowForIncome(oldRow);
+    if (moveFound) {
+      moveFound.sheet.getRange(moveFound.rowIndex, 1, 1, 5).setValues([[
+        dateVal,
+        p.invoiceNumber || '',
+        p.item || '',
+        'Приход',
+        qtyVal
+      ]]);
+    } else {
+      var movesSheet = getSheetMoves();
+      movesSheet.appendRow([
+        dateVal,
+        p.invoiceNumber || '',
+        p.item || '',
+        'Приход',
+        qtyVal
+      ]);
+    }
+
+    clearSheetCache('incomes');
+    clearSheetCache('moves');
+  }
+
+  function deleteIncome(id) {
+    var found = findIncomeRowById(id);
+    if (!found) throw new Error('Приход с таким ID не найден');
+
+    var sheet  = found.sheet;
+    var oldRow = found.row;
+
+    sheet.deleteRow(found.rowIndex);
+
+    var moveFound = findMoveRowForIncome(oldRow);
+    if (moveFound) {
+      moveFound.sheet.deleteRow(moveFound.rowIndex);
+    }
+
+    clearSheetCache('incomes');
+    clearSheetCache('moves');
+  }
+
+  function getIncomeById(id) {
+    var found = findIncomeRowById(id);
+    if (!found) return null;
+    var row = found.row;
+
+    var dateVal = row[2];
+    var dateStr = normalizeToISO(dateVal);
+
+    return {
+      id: row[5],
+      item: normalizeItemName(row[0]),
+      invoiceNumber: row[1],
+      date: dateStr, // Убедимся, что это строка в формате YYYY-MM-DD
+      qty: row[3],
+      unit: getItemUnitByName(row[0]) || row[4],
+      inStock: normalizeInStockValue(row[6])
+    };
+  }
+
+  // ========= РАСХОДЫ (из реестра контрактов) =========
+
+  function listExpenses() {
+    return refreshExpensesData();
+  }
+
+  function buildExpensesFromContracts() {
+    var response = Contracts.handle({ action: 'list', payload: {} }) || {};
+    if (!response.success) {
+      throw new Error(response.error || 'Не удалось получить данные реестра контрактов');
+    }
+
+    var contracts = response.data || [];
+    var cutoffTime = EXPENSES_CUTOFF.getTime();
+    var result = [];
+
+    for (var i = 0; i < contracts.length; i++) {
+      var c = contracts[i] || {};
+      var items = extractContractItems_(c);
+      for (var j = 0; j < items.length; j++) {
+        var it = items[j] || {};
+        var itemName = normalizeItemName(it.item || c.item);
+        var dateFact = normalizeDate(it.dateFact || c.dateFact);
+
+        if (!itemName || !dateFact) continue;
+        if (dateFact.getTime() < cutoffTime) continue; // до 06.12.2025 считаем архивом
+
+        var dateIso = normalizeToISO(dateFact);
+
+        var qty = Number(it.delivered);
+        if (isNaN(qty) || qty === 0) {
+          qty = Number(it.qty) || 0;
+        }
+
+        result.push({
+          id: c.id || Utilities.getUuid(),
+          org: c.org || '',
+          date: dateIso,
+          item: itemName,
+          qty: qty,
+          contractNumber: c.number || ''
+        });
+      }
+    }
+
+    return result;
+  }
+
+  function extractContractItems_(c) {
+    var items = (c && Array.isArray(c.items) && c.items.length) ? c.items : [];
+    if (!items.length) {
+      items = [{
+        item: c.item || '',
+        qty: c.qty,
+        planQty: c.planQty,
+        planDate: c.planDate,
+        dateFact: c.dateFact,
+        delivered: c.delivered
+      }];
+    }
+    return items;
+  }
+
+  function syncExpensesSheet(data) {
+    var sheetData = getExpensesData();
+    var sheet = sheetData.sheet;
+
+    var lastRows = Math.max(sheet.getLastRow() - 1, 0);
+    if (lastRows > 0) {
+      sheet.getRange(2, 1, lastRows, HEADERS_EXPENSES.length).clearContent();
+    }
+
+    if (data && data.length) {
+      var values = data.map(function (r) {
+        return [
+          r.org || '',
+          r.date ? new Date(r.date) : '',
+          r.item || '',
+          r.qty || 0,
+          r.id || ''
+        ];
+      });
+
+      sheet.getRange(2, 1, values.length, HEADERS_EXPENSES.length).setValues(values);
+    }
+
+    clearSheetCache('expenses');
+  }
+
+  function syncExpenseMoves(data) {
+    var movesData = getMovesData();
+    var movesSheet = movesData.sheet;
+    var values = movesData.values;
+
+    var body = values.slice(1);
+    var preserved = body.filter(function (r) {
+      return r[3] !== 'Расход';
+    });
+
+    var expenseRows = (data || []).map(function (r) {
+      return [
+        r.date ? new Date(r.date) : '',
+        r.contractNumber || '',
+        r.item || '',
+        'Расход',
+        Number(r.qty) || 0
+      ];
+    });
+
+    var newBody = preserved.concat(expenseRows);
+
+    var lastRows = Math.max(values.length - 1, 0);
+    if (lastRows > 0) {
+      movesSheet.getRange(2, 1, lastRows, HEADERS_MOVES.length).clearContent();
+    }
+
+    if (newBody.length) {
+      movesSheet.getRange(2, 1, newBody.length, HEADERS_MOVES.length).setValues(newBody);
+    }
+
+    clearSheetCache('moves');
+  }
+
+  function refreshExpensesData() {
+    var expenses = buildExpensesFromContracts();
+    syncExpensesSheet(expenses);
+    syncExpenseMoves(expenses);
+    return expenses;
+  }
+
+  function deleteExpense(p) {
+    if (!p || !p.id) throw new Error('id is required for deleteExpense');
+
+    var contractRes = Contracts.handle({ action: 'get', payload: { id: p.id } });
+    if (!contractRes || !contractRes.success || !contractRes.data) {
+      throw new Error('Contract not found for expense ' + p.id);
+    }
+
+    var contract = contractRes.data;
+    contract.dateFact = '';
+    contract.delivered = 0;
+
+    var updateRes = Contracts.handle({ action: 'update', payload: contract });
+    if (!updateRes || !updateRes.success) {
+      throw new Error('Failed to update contract ' + p.id);
+    }
+
+    refreshExpensesData();
+  }
+
+  // ========= ДВИЖЕНИЯ СКЛАДА =========
+
+  function listMoves() {
+    // Перед выдачей движений обновляем расходы, чтобы включить свежие минусовые операции
+    refreshExpensesData();
+
+    var data = getMovesData();
+    var values = data.values;
+    var res = [];
+
+    for (var i = 1; i < values.length; i++) {
+      var row = values[i];
+      if (!row[0] && !row[1] && !row[2] && !row[3] && !row[4]) continue;
+
+      var dateVal = row[0];
+      var dateStr = normalizeToISO(dateVal);
+
+      res.push({
+        date: dateStr, // Убедимся, что это строка в формате YYYY-MM-DD
+        contractNumber: row[1] || '',
+        item: normalizeItemName(row[2]),
+        operationType: row[3] || '', // Переименовано из 'type' для единообразия
+        qty: row[4]
+      });
+    }
+
+    return res;
+  }
+
+  // ========= ТОВАРЫ (РЕГИСТР) =========
+
+  function listItems() {
+    var data = getItemsData();
+    var sheet = data.sheet;
+    var values = data.values;
+    var res = [];
+
+    if (values.length <= 1) return [];
+
+    var body = values.slice(1);
+    var updated = false;
+
+    for (var i = 0; i < body.length; i++) {
+      var row = body[i];
+      var name = normalizeItemName(row[0]);
+      var unit = row[1];
+      var id   = row[2];
+      var active = row[3];
+
+      if (!name && !unit && !id) continue;
+
+      if (!id) {
+        id = Utilities.getUuid();
+        row[2] = id;
+        updated = true;
+      }
+
+      if (active === '' || active == null) {
+        active = true;
+        row[3] = true;
+        updated = true;
+      }
+
+      res.push({
+        id: id,
+        name: name,
+        unit: unit,
+        active: Boolean(active)
+      });
+    }
+
+    if (updated) {
+      sheet.getRange(2, 1, body.length, 4).setValues(body);
+      clearItemsIndexCache();
+    }
+
+    return res;
+  }
+
+  function createItem(p) {
+    if (!p || !p.name) throw new Error('Наименование товара обязательно');
+
+    var sheet = getSheetItems();
+    var id = Utilities.getUuid();
+    var name = normalizeItemName(p.name);
+    var unit = p.unit || '';
+
+    sheet.appendRow([
+      name,
+      unit,
+      id,
+      true
+    ]);
+
+    clearItemsIndexCache();
+  }
+
+  function findItemRowById(id) {
+    if (!id) return null;
+    var data = getItemsData();
+    var sheet = data.sheet;
+    var values = data.values;
+    for (var i = 1; i < values.length; i++) {
+      if (values[i][2] === id) {
+        return { sheet: sheet, rowIndex: i + 1, row: values[i] };
+      }
+    }
+    return null;
+  }
+
+  function updateItem(p) {
+    if (!p || !p.id) throw new Error('id is required for updateItem');
+    var found = findItemRowById(p.id);
+    if (!found) throw new Error('Товар с таким ID не найден');
+
+    var sheet = getSheetItems();
+    var name = normalizeItemName(p.name);
+    var unit = p.unit || '';
+    var active = (p.active !== undefined && p.active !== null)
+      ? !!p.active
+      : true;
+
+    var newRow = [
+      name,
+      unit,
+      p.id,
+      active
+    ];
+
+    sheet.getRange(found.rowIndex, 1, 1, 4).setValues([newRow]);
+
+    clearItemsIndexCache();
+  }
+
+  function deleteItem(id) {
+    var found = findItemRowById(id);
+    if (!found) throw new Error('Товар с таким ID не найден');
+
+    var row = found.row;
+    var itemName = row[0];
+
+    // ПРОВЕРКА: если есть приходы/движения — запрещаем удаление
+    if (hasItemMovements(itemName)) {
+      throw new Error(
+        'Нельзя удалить товар "' + itemName + '", так как по нему есть приходы или движения склада.'
+      );
+    }
+
+    var sheet = getSheetItems();
+    sheet.deleteRow(found.rowIndex);
+
+    clearItemsIndexCache();
+  }
+
+  function getItemById(id) {
+    var found = findItemRowById(id);
+    if (!found) return null;
+    var row = found.row;
+
+    return {
+      id: row[2],
+      name: row[0],
+      unit: row[1],
+      active: Boolean(row[3])
+    };
+  }
+
+  // ========= ВСПОМОГАТЕЛЬНОЕ ФОРМАТИРОВАНИЕ ДАТЫ =========
+  function formatDateISO(date) {
+    if (!date) return '';
+    var y = date.getFullYear();
+    var m = ('0' + (date.getMonth() + 1)).slice(-2);
+    var d = ('0' + date.getDate()).slice(-2);
+    return y + '-' + m + '-' + d;
+  }
+
+  // Превращаем любые строки дат (YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY, Date) в ISO
+  function normalizeToISO(val) {
+    if (!val) return '';
+
+    // Приводим любой формат даты (включая строки с временем) к YYYY-MM-DD без смещения даты
+    if (val instanceof Date && !isNaN(val)) {
+      return formatDateISO(val);
+    }
+
+    var str = String(val).trim();
+    if (!str) return '';
+
+    var iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(str);
+    if (iso) return iso[1] + '-' + iso[2] + '-' + iso[3];
+
+    var ru = /^(\d{2})[.\/-](\d{2})[.\/-](\d{4})$/.exec(str);
+    if (ru) return ru[3] + '-' + ru[2] + '-' + ru[1];
+
+    var parsed = new Date(str);
+    if (!isNaN(parsed)) return formatDateISO(parsed);
+
+    return '';
+  }
+
+  return {
+    handle: handle
+  };
+
+})();

@@ -1,0 +1,150 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ПростыеПоставки — платформа снабжения</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/landing.css') }}?v={{ range(1000, 9999) | random }}" />
+  </head>
+  <body class="landing-premium">
+    <!-- Ambient Background Blobs -->
+    <div class="blob blob-indigo"></div>
+    <div class="blob blob-violet"></div>
+    
+    <div class="noise"></div>
+    
+    <header class="nav-premium">
+      <div class="container nav-inner">
+        <div class="logo">
+          <div class="logo-box">П</div>
+          <span class="logo-text">Простые<span class="logo-suffix">Поставки</span></span>
+        </div>
+        <nav class="menu">
+          <a href="#features">Решения</a>
+          <a href="#equipment">Оборудование</a>
+          <a href="#cases">Кейсы</a>
+          <a href="#contact">Контакты</a>
+        </nav>
+        <div class="nav-actions">
+          <button class="nav-login" data-auth-trigger="login">Войти</button>
+          <button class="nav-start" data-auth-trigger="register">Начать работу</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="hero-premium">
+      <div class="container hero-inner">
+        <div class="hero-content">
+          <div class="badge-premium">
+            <span class="badge-dot"></span>
+            Экосистема снабжения 2.0
+          </div>
+          
+          <h1 class="hero-title">
+            Интеллект<br />
+            <span class="hero-title-accent">в каждой поставке</span>
+          </h1>
+          
+          <p class="hero-description">
+            Комплексное решение для управления медицинским снабжением. Автоматизация контрактов,
+            складского учета и логистики в едином премиальном интерфейсе.
+          </p>
+          
+          <div class="hero-cta">
+            <button class="btn-primary" data-auth-trigger="register">
+              Подключиться <span class="btn-icon">→</span>
+            </button>
+            <button class="btn-secondary" data-auth-trigger="register">Демо-доступ</button>
+          </div>
+          
+          <div class="hero-trust">
+            <span class="trust-label">ДОВЕРЯЮТ:</span>
+            <div class="trust-logos">
+              <div class="trust-logo"></div>
+              <div class="trust-logo"></div>
+              <div class="trust-logo"></div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="hero-visual">
+          <div class="product-mockup">
+            <div class="mockup-header">
+              <div class="mockup-dots">
+                <span class="dot-red"></span>
+                <span class="dot-yellow"></span>
+                <span class="dot-green"></span>
+              </div>
+              <div class="mockup-address"></div>
+            </div>
+            <div class="mockup-body">
+              <div class="mockup-grid">
+                <div class="mockup-card card-top-left"></div>
+                <div class="mockup-card card-top-right"></div>
+                <div class="mockup-card card-middle"></div>
+                <div class="mockup-card card-bottom">
+                  <div class="mockup-icon-box">📦</div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Floating Widgets -->
+            <div class="floating-widget widget-safety">
+              <div class="widget-icon">🛡️</div>
+              <span>Безопасность</span>
+            </div>
+            <div class="floating-widget widget-analytics">
+              <div class="widget-icon">📊</div>
+              <span>Аналитика</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <section class="features-premium">
+      <div class="container">
+        <div class="features-header">
+          <h2>Полный контроль над процессами</h2>
+          <p>Единая платформа для взаимодействия заказчиков, поставщиков и логистических служб.</p>
+        </div>
+        
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon">🌐</div>
+            <h3>Глобальная сеть</h3>
+            <p>Управление поставками из любой точки мира с полной прозрачностью.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🛡️</div>
+            <h3>Безопасность</h3>
+            <p>Защищенный документооборот и шифрование данных по стандартам отрасли.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">📦</div>
+            <h3>Умный склад</h3>
+            <p>Автоматический учет остатков и прогнозирование дефицита.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-stack">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% include 'auth/modal.html' %}
+  </body>
+</html>

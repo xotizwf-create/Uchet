@@ -1,0 +1,25 @@
+{% extends "auth/layout.html" %}
+{% block content %}
+  <h1>Admin</h1>
+  <p class="subtitle">Select a user to impersonate.</p>
+  {% if impersonating %}
+    <form method="post" action="{{ url_for('admin_impersonate_stop') }}">
+      <button class="danger-btn" type="submit">Stop impersonation</button>
+    </form>
+  {% endif %}
+  <div class="admin-users">
+    {% for user in users %}
+      <div class="admin-user-row">
+        <div>
+          <strong>{{ user.email or ("User #" ~ user.id) }}</strong>
+          <div class="admin-user-meta">
+            ID: {{ user.id }}{% if user.is_admin %} | admin{% endif %}
+          </div>
+        </div>
+        <form method="post" action="{{ url_for('admin_impersonate', user_id=user.id) }}">
+          <button class="primary-btn" type="submit">Impersonate</button>
+        </form>
+      </div>
+    {% endfor %}
+  </div>
+{% endblock %}

@@ -1,0 +1,45 @@
+// Menu.gs
+
+function onOpen() {
+  initMini1C();
+  if (typeof ensureContractsWatchTrigger === 'function') {
+    ensureContractsWatchTrigger();
+  }
+
+  SpreadsheetApp.getUi()
+    .createMenu('ПП')
+    .addItem('Открыть приложение', 'Menu_openApp')
+    .addItem('Инициализировать структуру', 'initMini1C')
+    .addToUi();
+}
+
+
+const Menu = (function () {
+
+  /**
+   * Открывает модальное приложение.
+   * Использует HTML-шаблон ui_shell.html.
+   */
+  function openApp() {
+    const template = HtmlService.createTemplateFromFile('ui_shell');
+
+    const html = template
+      .evaluate()
+      .setWidth(1200)
+      .setHeight(700)
+      .setSandboxMode(HtmlService.SandboxMode.IFRAME); 
+      // IFRAME безопаснее и лучше работает с CSS/JS
+
+    SpreadsheetApp.getUi().showModalDialog(html, 'NikitenkoWare');
+  }
+
+  return {
+    openApp
+  };
+
+})();
+
+/** Проброс функции для меню */
+function Menu_openApp() {
+  Menu.openApp();
+}

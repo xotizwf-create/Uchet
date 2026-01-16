@@ -1,0 +1,22 @@
+function appBackend(request) {
+  try {
+
+    const handlers = {
+      contracts: Contracts,
+      warehouse: Warehouse,
+      pricelist: PriceList,
+      dashboard: Dashboard,
+      commercials: Commercials,
+      archive: Archive
+    };
+
+    const handler = handlers[request.module];
+    if (!handler) throw new Error("Unknown module: " + request.module);
+
+    return handler.handle(request);
+
+  } catch (e) {
+    Core.error(e);
+    return { success: false, error: e.message };
+  }
+}

@@ -1,0 +1,253 @@
+<script>
+  var UIPricelist = (function () {
+  var priceItems = [];
+  var searchTerm = '';
+  var loading = false;
+  var readyReported = false;
+  var preloadPromise = null;
+
+    function markReady() {
+      if (readyReported) return;
+      readyReported = true;
+      if (window.AppModules && window.AppModules.markReady) {
+        window.AppModules.markReady('pricelist');
+      }
+    }
+
+    function load() {
+      setToolbarContent('<div class="pricelist-toolbar-title">Прайс-лист</div>');
+      setSubtoolbarContent('');
+      setBottomPanelTitles('', '');
+      if (priceItems.length) {
+        render();
+        markReady();
+        return;
+      }
+      fetchData();
+    }
+
+    function fetchData() {
+      if (loading) return;
+      loading = true;
+      var guard = window.createTabGuard ? window.createTabGuard('pricelist') : null;
+      setDataAreaContent('<div class="pricelist-loading"><div class="spinner"></div><div>Загружаем прайс-лист...</div></div>');
+      google.script.run
+        .withSuccessHandler(function (res) {
+          loading = false;
+          if (!res || !res.success) {
+            if (guard && guard.isActive()) {
+              setDataAreaContent('Ошибка загрузки: ' + (res && res.error ? res.error : 'неизвестная ошибка'));
+            }
+            markReady();
+            return;
+          }
+          priceItems = res.data || [];
+          if (guard && guard.isActive()) {
+            render();
+          }
+          markReady();
+        })
+        .withFailureHandler(function (err) {
+          loading = false;
+          if (guard && guard.isActive()) {
+            setDataAreaContent('Ошибка загрузки: ' + (err || 'неизвестная ошибка'));
+          }
+          markReady();
+        })
+        .appBackend({ module: 'pricelist', action: 'list', payload: {} });
+    }
+
+    function preload() {
+      if (preloadPromise) return preloadPromise;
+      if (priceItems.length) return Promise.resolve();
+      preloadPromise = new Promise(function (resolve) {
+        google.script.run
+          .withSuccessHandler(function (res) {
+            if (res && res.success) {
+              priceItems = res.data || [];
+            } else {
+              priceItems = [];
+            }
+            resolve();
+          })
+          .withFailureHandler(function () {
+            priceItems = [];
+            resolve();
+          })
+          .appBackend({ module: 'pricelist', action: 'list', payload: {} });
+      });
+      return preloadPromise;
+    }
+
+    function render() {
+      var term = normalizeSearch(searchTerm);
+      var filtered = term ? priceItems.filter(function (item) {
+        var haystack = normalizeSearch([
+          item.code,
+          item.name,
+          item.note,
+          item.priceNoVat,
+          item.priceWithVat
+        ].join(' '));
+        return haystack.indexOf(term) !== -1;
+      }) : priceItems;
+      var rows = filtered.length ? filtered.map(function (item) {
+        return '' +
+          '<tr class="pricelist-row">' +
+            '<td>' + escapeHtml(item.code || '') + '</td>' +
+            '<td>' + escapeHtml(item.name || '') + '</td>' +
+            '<td>' + formatNumber(item.priceNoVat) + '</td>' +
+            '<td>' + formatNumber(item.priceWithVat) + '</td>' +
+            '<td>' + escapeHtml(item.note || '') + '</td>' +
+          '</tr>';
+      }).join('') : '<tr><td colspan="5" class="pricelist-empty">Нет данных по выбранному поиску.</td></tr>';
+
+      var html = '' +
+        '<div class="pricelist-page">' +
+          '<div class="pricelist-card">' +
+            '<div class="pricelist-card-header">' +
+              '<div class="pricelist-title">Прайс-лист</div>' +
+              '<div class="pricelist-actions">' +
+                '<div class="pricelist-search">' +
+                  '<input id="pricelistSearchInput" type="text" placeholder="Поиск по коду, названию или примечанию..." value="' + escapeHtml(searchTerm) + '">' +
+                  '<button class="pricelist-search-clear" id="pricelistSearchClear" type="button">✕</button>' +
+                '</div>' +
+                '<button class="toolbar-button btn-ghost" onclick="UIPricelist.reload()">Обновить</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="pricelist-table-wrap">' +
+              '<table class="pricelist-table">' +
+                '<thead>' +
+                  '<tr>' +
+                    '<th>Код</th>' +
+                    '<th>Наименование</th>' +
+                    '<th>Цена без НДС</th>' +
+                    '<th>Цена с НДС</th>' +
+                    '<th>Примечание</th>' +
+                  '</tr>' +
+                '</thead>' +
+                '<tbody>' + rows + '</tbody>' +
+              '</table>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<style>' +
+          '.pricelist-page{padding:16px;}' +
+          '.pricelist-toolbar-title{font-size:22px;font-weight:800;color:#111827;padding:12px 16px 4px;}' +
+          '.pricelist-loading{margin:60px auto;max-width:420px;background:#fff;border-radius:16px;padding:28px;border:1px solid #e2e8f0;display:flex;flex-direction:column;align-items:center;gap:12px;font-weight:700;color:#334155;box-shadow:0 12px 28px rgba(15,23,42,0.12);}' +
+          '.pricelist-card{background:#fff;border-radius:18px;border:1px solid #e2e8f0;box-shadow:0 12px 26px rgba(15,23,42,0.08);padding:16px;}' +
+          '.pricelist-card-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;}' +
+          '.pricelist-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}' +
+          '.pricelist-title{font-size:16px;font-weight:800;color:#0f172a;}' +
+          '.pricelist-search{position:relative;}' +
+          '.pricelist-search input{height:36px;border-radius:12px;border:none;padding:0 32px 0 12px;background:#f1f5f9;font-size:13px;font-weight:700;color:#0f172a;min-width:220px;}' +
+          '.pricelist-search input:focus{outline:none;box-shadow:0 0 0 2px rgba(59,130,246,0.2);background:#fff;}' +
+          '.pricelist-search-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);border:none;background:#e2e8f0;color:#475569;width:22px;height:22px;border-radius:6px;font-weight:800;cursor:pointer;display:none;}' +
+          '.pricelist-search-clear.show{display:inline-flex;align-items:center;justify-content:center;}' +
+          '.pricelist-table-wrap{overflow:auto;}' +
+          '.pricelist-table{width:100%;border-collapse:separate;border-spacing:0 8px;}' +
+          '.pricelist-table thead th{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;font-weight:800;padding:8px 10px;text-align:left;}' +
+          '.pricelist-row{background:#fff;border-radius:14px;box-shadow:0 8px 16px rgba(15,23,42,0.06);}' +
+          '.pricelist-row td{padding:10px 10px;font-weight:600;color:#0f172a;}' +
+          '.pricelist-row td:first-child{border-radius:14px 0 0 14px;}' +
+          '.pricelist-row td:last-child{border-radius:0 14px 14px 0;}' +
+          '.pricelist-empty{padding:18px 10px;text-align:center;color:#94a3b8;font-weight:700;}' +
+        '</style>';
+
+      setDataAreaContent(html);
+      bindSearch();
+    }
+
+    function reload() {
+      fetchData();
+    }
+
+    function bindSearch() {
+      var input = document.getElementById('pricelistSearchInput');
+      var clearBtn = document.getElementById('pricelistSearchClear');
+      if (input && !input.dataset.bound) {
+        input.dataset.bound = '1';
+        input.addEventListener('input', function (e) {
+          searchTerm = e.target.value || '';
+          renderRows();
+        });
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape') {
+            searchTerm = '';
+            input.value = '';
+            renderRows();
+          }
+        });
+      }
+      if (clearBtn) {
+        if (searchTerm) clearBtn.classList.add('show'); else clearBtn.classList.remove('show');
+        clearBtn.onclick = function () {
+          searchTerm = '';
+          if (input) input.value = '';
+          renderRows();
+        };
+      }
+    }
+
+    function normalizeSearch(value) {
+      return String(value || '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function renderRows() {
+      var tbody = document.querySelector('.pricelist-table tbody');
+      if (!tbody) return;
+      var term = normalizeSearch(searchTerm);
+      var filtered = term ? priceItems.filter(function (item) {
+        var haystack = normalizeSearch([
+          item.code,
+          item.name,
+          item.note,
+          item.priceNoVat,
+          item.priceWithVat
+        ].join(' '));
+        return haystack.indexOf(term) !== -1;
+      }) : priceItems;
+      var rows = filtered.length ? filtered.map(function (item) {
+        return '' +
+          '<tr class="pricelist-row">' +
+            '<td>' + escapeHtml(item.code || '') + '</td>' +
+            '<td>' + escapeHtml(item.name || '') + '</td>' +
+            '<td>' + formatNumber(item.priceNoVat) + '</td>' +
+            '<td>' + formatNumber(item.priceWithVat) + '</td>' +
+            '<td>' + escapeHtml(item.note || '') + '</td>' +
+          '</tr>';
+      }).join('') : '<tr><td colspan="5" class="pricelist-empty">Нет данных по выбранному поиску.</td></tr>';
+      tbody.innerHTML = rows;
+      var clearBtn = document.getElementById('pricelistSearchClear');
+      if (clearBtn) {
+        if (searchTerm) clearBtn.classList.add('show'); else clearBtn.classList.remove('show');
+      }
+    }
+
+    function escapeHtml(str) {
+      if (str == null) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatNumber(value) {
+      var num = Number(value);
+      if (isNaN(num)) return '';
+      return String(num);
+    }
+
+    return {
+      load: load,
+      onResume: function () { if (priceItems.length) render(); },
+      reload: reload,
+      preload: preload
+    };
+  })();
+</script>

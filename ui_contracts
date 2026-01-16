@@ -1,0 +1,2985 @@
+<script>
+/* ===========================
+   UIContracts (FULL UPDATED)
+   - row highlight as one piece
+   - cell outline on click
+   - editors only on click (no hover)
+   - ctrl+c / ctrl+v row copy-paste
+   - context menu has paste row
+=========================== */
+var UIContracts = (function () {
+
+  /* ===== State ===== */
+  var contractsCache = [];
+  var requestToken = 0;
+
+  // default sort: order
+  var lastSortField = 'order';
+  var sortAsc = true;
+
+  var currentStatusFilter = 'all';
+  var currentSearch = '';
+
+  var orgCache = [];
+  var supplierCache = [];
+  var itemsCache = [];
+  var refsLoaded = false;
+
+  var copyBuffer = null; // array of cloned contracts
+  var pasteInFlight = false;
+
+  // selection + context menu
+  var selectedIds = [];
+  var lastSelectedId = null;
+  var activeCellEl = null;
+  var ctxMenuEl = null;
+  var cellEditArmed = null; // td, который “вооружён” на открытие редактора со 2-го клика
+  
+
+  // inline cell editor
+  var activeEditor = null; // { td, input, listEl, field, type, oldDisplay, oldRaw }
+  var editorIgnoreBlur = false;
+
+  // selection behavior flags
+  var selectionChangedOnMouseDown = false;
+
+  // undo / redo stacks
+  var undoStack = []; // {kind:'update', id, field, oldVal, newVal} OR {kind:'create', contract, afterId} OR {kind:'delete', contract}
+  var redoStack = [];
+
+  function pushUndo(entry, preserveRedo) {
+    undoStack.push(entry);
+    if (undoStack.length > 20) undoStack.shift();
+    if (!preserveRedo) redoStack = [];
+  }
+
+  function pushRedo(entry) {
+    redoStack.push(entry);
+    if (redoStack.length > 20) redoStack.shift();
+  }
+
+  // paste floating button
+  var pasteBtnEl = null;
+  var readyReported = false;
+  var preloadedContracts = null;
+  var preloadPromise = null;
+  var preloadResolved = false;
+  var contractsImportInFlight = false;
+  var contractsProgressEl = null;
+
+  function markReady() {
+    if (readyReported) return;
+    readyReported = true;
+    if (window.AppModules && window.AppModules.markReady) {
+      window.AppModules.markReady('contracts');
+    }
+  }
+
+  /* ===== Entry ===== */
+  function load() {
+    lastSortField = 'order';
+    sortAsc = true;
+
+    setToolbarContent(
+      '<div class="contracts-toolbar">' +
+        '<div class="contracts-toolbar__title">' +
+          '<div class="contracts-toolbar__main"><span class="contracts-toolbar__icon">📑</span>Реестр контрактов</div>' +
+          '<div class="contracts-toolbar__sub">Управление текущими договорами и поставками</div>' +
+        '</div>' +
+        '<div class="contracts-toolbar__actions">' +
+          '<button class="toolbar-button ghost" onclick="UIContracts.refresh(true)"><span class="icon-refresh"></span>Обновить</button>' +
+          '<button class="toolbar-button ghost" onclick="UIContracts.runContractsImport()"><span class="icon-upload"></span>Импорт</button>' +
+          '<button class="toolbar-button primary" onclick="UIContracts.create()"><span class="icon-plus"></span>Создать</button>' +
+        '</div>' +
+      '</div>'
+    );
+
+    setSubtoolbarContent(buildTopFiltersHtml());
+    bindTopFiltersUI();
+
+    setBottomPanelTitles('План-факт по контрактам', 'Доп. показатели (сделаем позже)');
+
+    ensureReferenceCaches(function () {
+  ensureItemsCache(function () {
+    if (contractsCache && contractsCache.length) {
+      renderTable();
+      markReady();
+      return;
+    }
+    refresh();
+  });
+});
+
+
+    bindGlobalShortcuts();
+  }
+
+  /* ===== Top filters ===== */
+
+    function buildTopFiltersHtml() {
+    return (
+      '<style>' +
+        '#subToolbar{padding:6px 10px 6px;background:transparent;border:none;}' +
+        '.contracts-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:2px 4px 0;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;}' +
+        '.contracts-toolbar__title{display:flex;flex-direction:column;gap:6px;flex:0 0 auto;min-width:0;}' +
+        '.contracts-toolbar__main{display:flex;align-items:center;gap:10px;font-family:"Inter","Segoe UI",system-ui,sans-serif;font-size:26px;font-weight:800;color:var(--text-main);line-height:1.05;letter-spacing:-0.15px;}' +
+        '.contracts-toolbar__icon{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;font-size:18px;box-shadow:0 10px 20px rgba(59,130,246,0.25);}' +
+        '.contracts-toolbar__sub{font-size:12px;color:var(--text-muted);}' +
+        '.contracts-toolbar__actions{display:flex;align-items:center;gap:10px;flex:0 0 auto;}' +
+        '.toolbar-button{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;box-shadow:0 6px 14px rgba(15,23,42,0.08);transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease,color .12s ease,background .12s ease;background:#fff;color:#334155;border:none;}' +
+        '.toolbar-button:hover{box-shadow:0 12px 24px rgba(15,23,42,0.12);transform:translateY(-1px);background:#f8fafc;color:#2563eb;border-color:#cbd5e1;}' +
+        '.toolbar-button:active{transform:translateY(0);box-shadow:0 6px 16px rgba(15,23,42,0.08);}' +
+        '.toolbar-button.primary{background:#2563eb;border:none;color:#fff;box-shadow:0 10px 24px rgba(37,99,235,0.25);}' +
+        '.toolbar-button.ghost{background:#fff;border:none;color:#475569;}' +
+        '.toolbar-button .icon-plus:before{content:"＋";display:inline-block;font-weight:800;font-size:15px;line-height:1;}' +
+        '.toolbar-button .icon-refresh:before{content:"⟳";display:inline-block;font-weight:800;font-size:14px;line-height:1;}' +
+        '.toolbar-button .icon-upload:before{content:"⇪";display:inline-block;font-weight:800;font-size:13px;line-height:1;transform:scaleX(0.9);}' +
+        '.contracts-subbar{display:block;padding:0;margin:2px 0 0;background:transparent;border:none;}' +
+        '.contracts-filters-card{display:flex;align-items:end;gap:8px;background:rgba(255,255,255,0.7);border:none;border-radius:12px;padding:8px 10px;box-shadow:var(--glass-shadow);backdrop-filter:blur(16px);flex-wrap:nowrap;overflow-x:auto;}' +
+        '.contracts-filters-card > *{flex:0 0 auto;}' +
+        '.contracts-filter{display:flex;flex-direction:column;gap:4px;min-width:180px;font-family:"Inter","Segoe UI",system-ui,sans-serif;}' +
+        '.contracts-filter .lbl{font-size:12px;font-weight:700;color:var(--text-muted);letter-spacing:0.01em;}' +
+        '.contracts-filter select,.contracts-filter input[type="search"],.contracts-filter input[type="text"]{height:34px;border-radius:9px;border:none;padding:0 10px;background:#f1f5f9;font-size:13px;font-weight:700;color:var(--text-main);box-shadow:0 10px 22px rgba(15,23,42,0.08), inset 0 1px 2px rgba(255,255,255,0.7);transition:border-color .12s ease,box-shadow .12s ease,background .12s ease;}' +
+        '.contracts-filter select:focus,.contracts-filter input[type="search"]:focus,.contracts-filter input[type="text"]:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,0.2);background:#fff;}' +
+        '.contracts-filter input::placeholder{color:#94a3b8;font-weight:600;}' +
+        '.contracts-search{position:relative;min-width:320px;}' +
+        '.contracts-search input{padding-left:42px;}' +
+        '.contracts-search .search-ico{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:18px;height:18px;opacity:.65;background-repeat:no-repeat;background-size:18px 18px;background-image:url("data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"%239ca3af\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><line x1=\"16.65\" y1=\"16.65\" x2=\"21\" y2=\"21\"/></svg>");}' +
+        '.contracts-sort-group{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;}' +
+        '.contracts-sort-btn{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 10px;border-radius:9px;border:none;background:#fff;font-size:12.5px;font-weight:700;color:var(--text-main);cursor:pointer;box-shadow:0 4px 10px rgba(15,23,42,0.05);transition:border-color .12s ease,box-shadow .12s ease,background .12s ease,color .12s ease;}' +
+        '.contracts-sort-btn:hover{box-shadow:0 8px 16px rgba(15,23,42,0.12);color:#1d4ed8;}' +
+        '.contracts-sort-btn.active{border-color:#3b82f6;background:#eff6ff;color:#1d4ed8;}' +
+        '.contracts-sort-icon{font-size:12px;color:#64748b;}' +
+        '.contracts-clear-btn{height:34px;padding:0 14px;border-radius:9px;border:none;background:#fff;cursor:pointer;box-shadow:0 6px 14px rgba(15,23,42,0.08);white-space:nowrap;font-weight:800;color:#475569;transition:background-color .12s ease,box-shadow .12s ease,border-color .12s ease;}' +
+        '.contracts-clear-btn:hover{background:#f8fafc;box-shadow:0 10px 22px rgba(15,23,42,0.12);border-color:#cbd5e1;}' +
+        '@media (max-width: 1200px){.contracts-filters-card{flex-wrap:nowrap;}}' +
+        'body.theme-dark .contracts-toolbar__main{color:#e2e8f0;}' +
+        'body.theme-dark .contracts-toolbar__sub{color:#94a3b8;}' +
+        'body.theme-dark .contracts-filters-card{background:rgba(15,23,42,0.7);box-shadow:0 16px 40px rgba(15,23,42,0.45);}' +
+        'body.theme-dark .contracts-filter .lbl{color:#94a3b8;}' +
+        'body.theme-dark .contracts-filter select,body.theme-dark .contracts-filter input[type="search"],body.theme-dark .contracts-filter input[type="text"]{background:#0f172a;color:#e2e8f0;box-shadow:inset 0 1px 2px rgba(0,0,0,0.5);}' +
+        'body.theme-dark .contracts-filter input::placeholder{color:#64748b;}' +
+        'body.theme-dark .toolbar-button,body.theme-dark .contracts-sort-btn,body.theme-dark .contracts-clear-btn{background:#0f172a;color:#e2e8f0;box-shadow:0 10px 22px rgba(15,23,42,0.4);}' +
+        'body.theme-dark .toolbar-button.primary{background:#2563eb;color:#fff;}' +
+      '</style>' +
+      '<div class="contracts-subbar">' +
+        '<div class="contracts-filters-card">' +
+          '<div class="contracts-filter contracts-search">' +
+            '<span class="lbl">&nbsp;</span>' +
+            '<span class="search-ico"></span>' +
+            '<input id="contractsSearch" type="search" placeholder="Поиск по номеру, организации..." autocomplete="off">' +
+          '</div>' +
+          '<div class="contracts-filter">' +
+            '<span class="lbl">Статус:</span>' +
+            '<select id="contractsStatusFilter">' +
+              '<option value="all">Все статусы</option>' +
+              '<option value="inwork">В работе</option>' +
+              '<option value="missingDocs">Нет документов</option>' +
+              '<option value="done">Выполнен</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="contracts-filter">' +
+            '<span class="lbl">Сортировка:</span>' +
+            '<div class="contracts-sort-group">' +
+              '<button type="button" id="contractsSortOrder" class="contracts-sort-btn">Дата добавления <span class="contracts-sort-icon" id="contractsSortOrderIcon">↕</span></button>' +
+              '<button type="button" id="contractsSortDeadline" class="contracts-sort-btn">По дедлайну <span class="contracts-sort-icon" id="contractsSortDeadlineIcon">↕</span></button>' +
+              '<button type="button" id="contractsSortFact" class="contracts-sort-btn">По факту <span class="contracts-sort-icon" id="contractsSortFactIcon">↕</span></button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="contracts-filter" style="align-items:flex-end;">' +
+            '<button type="button" id="contractsClearFilters" class="contracts-clear-btn">Сбросить</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function bindTopFiltersUI() {
+    var statusSel = document.getElementById('contractsStatusFilter');
+    var search = document.getElementById('contractsSearch');
+    var clearBtn = document.getElementById('contractsClearFilters');
+    var sortOrderBtn = document.getElementById('contractsSortOrder');
+    var sortDeadlineBtn = document.getElementById('contractsSortDeadline');
+    var sortFactBtn = document.getElementById('contractsSortFact');
+
+    if (statusSel) {
+      statusSel.value = currentStatusFilter || 'all';
+      statusSel.onchange = function () {
+        currentStatusFilter = statusSel.value;
+        renderTable();
+      };
+    }
+
+    if (search) {
+      search.value = currentSearch || '';
+      search.oninput = function () {
+        currentSearch = (search.value || '').toLowerCase().trim();
+        renderTable();
+      };
+    }
+
+    if (sortOrderBtn) {
+      sortOrderBtn.onclick = function () {
+        sortBy('order');
+        updateSortControls();
+        renderTable();
+      };
+    }
+
+    if (sortDeadlineBtn) {
+      sortDeadlineBtn.onclick = function () {
+        sortByDateField('deadline');
+        updateSortControls();
+        renderTable();
+      };
+    }
+
+    if (sortFactBtn) {
+      sortFactBtn.onclick = function () {
+        sortByDateField('dateFact');
+        updateSortControls();
+        renderTable();
+      };
+    }
+
+    if (clearBtn) {
+      clearBtn.onclick = function () {
+        currentStatusFilter = 'all';
+        currentSearch = '';
+        lastSortField = 'order';
+        sortAsc = true;
+
+        if (statusSel) statusSel.value = 'all';
+        if (search) search.value = '';
+        updateSortControls();
+        renderTable();
+      };
+    }
+    updateSortControls();
+  }
+
+  function attachFocusCombo(wrapper, input, list, getArr, onChangeApply) {
+    if (!input || !list) return;
+
+    function open() {
+      renderSuggestList(list, getArr(input.value || ''), input.value, function (val) {
+        input.value = val || '';
+        hideList(list);
+        if (onChangeApply) onChangeApply();
+      });
+      positionListNearInput(list, input);
+      showList(list);
+    }
+
+    input.onclick = function () { open(); };
+
+    input.oninput = function () {
+      if (onChangeApply) onChangeApply();
+      open();
+    };
+
+    input.onblur = function () {
+      setTimeout(function () { hideList(list); }, 120);
+    };
+  }
+
+  function updateSortControls() {
+    var orderBtn = document.getElementById('contractsSortOrder');
+    var deadlineBtn = document.getElementById('contractsSortDeadline');
+    var factBtn = document.getElementById('contractsSortFact');
+    var orderIcon = document.getElementById('contractsSortOrderIcon');
+    var deadlineIcon = document.getElementById('contractsSortDeadlineIcon');
+    var factIcon = document.getElementById('contractsSortFactIcon');
+
+    if (orderBtn) orderBtn.classList.toggle('active', lastSortField === 'order');
+    if (deadlineBtn) deadlineBtn.classList.toggle('active', lastSortField === 'deadline');
+    if (factBtn) factBtn.classList.toggle('active', lastSortField === 'dateFact');
+    if (orderIcon) orderIcon.textContent = (lastSortField === 'order') ? (sortAsc ? '▲' : '▼') : '↕';
+    if (deadlineIcon) deadlineIcon.textContent = (lastSortField === 'deadline') ? (sortAsc ? '▲' : '▼') : '↕';
+    if (factIcon) factIcon.textContent = (lastSortField === 'dateFact') ? (sortAsc ? '▲' : '▼') : '↕';
+  }
+
+  function renderSuggestList(listEl, arr, query, onPick, selectedValue) {
+    var q = (query || '').toString().trim().toLowerCase();
+    var selected = (selectedValue || '').toString().trim().toLowerCase();
+    var html = '';
+    var count = 0;
+
+    (arr || []).forEach(function (name) {
+      if (!name) return;
+      var t = String(name);
+      if (q && t.toLowerCase().indexOf(q) === -1) return;
+      if (count >= 80) return;
+      var isSelected = selected && t.toLowerCase() === selected;
+      html += '<div class="combo-item' + (isSelected ? ' selected' : '') + '" data-value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</div>';
+      count++;
+    });
+
+    if (!html) html = '<div class="combo-item">Ничего не найдено</div>';
+    listEl.innerHTML = html;
+
+    Array.prototype.forEach.call(listEl.querySelectorAll('.combo-item[data-value]'), function (el) {
+      el.onclick = function () {
+        var v = el.getAttribute('data-value');
+        if (onPick) onPick(v);
+      };
+    });
+  }
+
+  function showList(el) { if (el) el.style.display = 'block'; }
+  function hideList(el) {
+    if (!el) return;
+    el.style.display = 'none';
+    if (el.dataset && el.dataset.floatingAttached === '1' && el.parentNode === document.body) {
+      document.body.removeChild(el);
+    }
+  }
+
+  function ensureListInBody(listEl) {
+    if (!listEl) return;
+    if (listEl.parentNode !== document.body) document.body.appendChild(listEl);
+  }
+
+  function positionListNearInput(listEl, inputEl) {
+    if (!listEl || !inputEl) return;
+    ensureListInBody(listEl);
+    listEl.dataset.floatingAttached = '1';
+    var rect = inputEl.getBoundingClientRect();
+    listEl.style.position = 'fixed';
+    listEl.style.minWidth = rect.width + 'px';
+    listEl.style.left = rect.left + 'px';
+    listEl.style.top = (rect.bottom + 6) + 'px';
+    listEl.style.zIndex = '65000';
+  }
+
+  function positionListInWrapper(listEl, wrapperEl) {
+    if (!listEl || !wrapperEl) return;
+    if (listEl.parentNode !== wrapperEl) wrapperEl.appendChild(listEl);
+    listEl.dataset.floatingAttached = '0';
+    listEl.style.position = 'absolute';
+    listEl.style.left = '0';
+    listEl.style.right = '0';
+    listEl.style.top = '100%';
+    listEl.style.bottom = '';
+    listEl.style.transform = '';
+    listEl.style.marginTop = '6px';
+    listEl.style.minWidth = '';
+    listEl.style.zIndex = '15000';
+  }
+
+  /* ===== Server ===== */
+
+   function refresh(forceServer) {
+
+    var token = ++requestToken;
+    var force = !!forceServer;
+
+// если нажали “Обновить” — не использовать preloadedContracts
+if (force) {
+  preloadedContracts = null;
+  preloadPromise = null;
+  preloadResolved = true;
+}
+
+
+    if (!preloadedContracts && preloadPromise && !preloadResolved) {
+      setDataAreaContent('<div class="panel-loading"><div class="spinner"></div><div>Загрузка реестра контрактов...</div></div>');
+      preloadPromise.then(function () {
+        // перезапускаем refresh после прелоада
+        refresh();
+      });
+      return;
+    }
+
+    if (preloadedContracts) {
+  contractsCache = preloadedContracts.data || [];
+
+  ensureReferenceCaches(function () {
+    ensureItemsCache(function () {
+      renderTable();
+      markReady();
+    }, { forceServer: force });
+  }, { forceServer: force });
+
+  preloadedContracts = null;
+  return;
+}
+
+
+    setDataAreaContent('<div class="panel-loading"><div class="spinner"></div><div>Загрузка реестра контрактов...</div></div>');
+
+    google.script.run
+      .withSuccessHandler(function (result) {
+        if (token !== requestToken) {
+          markReady();
+          return;
+        }
+        if (window.__activeModule !== 'contracts') {
+          markReady();
+          return;
+        }
+
+        if (!result || !result.success) {
+          setDataAreaContent('Ошибка: ' + (result && result.error ? result.error : 'неизвестная ошибка'));
+          markReady();
+          return;
+        }
+
+        contractsCache = (result.data || []).map(function (c, idx) {
+          // order: используем rowNumber если пришёл, иначе индекс
+          c.__order = (c.rowNumber != null) ? Number(c.rowNumber) : (idx + 1);
+          return c;
+        });
+
+        ensureReferenceCaches(function () {
+  ensureItemsCache(function () {
+    renderTable();
+    markReady();
+  }, { forceServer: force });
+}, { forceServer: force });
+
+      })
+      .withFailureHandler(function (err) {
+        setDataAreaContent('Ошибка: ' + (err || 'неизвестная ошибка'));
+        markReady();
+      })
+      .appBackend({
+        module: 'contracts',
+        action: 'list',
+        payload: {}
+      });
+  }
+
+  /* ===== helpers ===== */
+
+  function parseDate(val) {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    var d = new Date(val);
+    return isNaN(d) ? null : d;
+  }
+
+  function todayStart() {
+    var d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+
+  function daysLeftTo(deadlineIso) {
+    var dd = parseDate(deadlineIso);
+    if (!dd) return null;
+    var a = todayStart().getTime();
+    var b = new Date(dd.getFullYear(), dd.getMonth(), dd.getDate()).getTime();
+    return Math.ceil((b - a) / 86400000);
+  }
+
+  function calcStatusFromHeader(c) {
+    var qty       = Number(c.qty) || 0;
+    var delivered = Number(c.delivered) || 0;
+    var hasFact   = !!c.dateFact;
+    var docsSent  = !!c.docsSent;
+    var doneByQty = (qty > 0 && qty === delivered);
+
+    if (c.forceDone) return 'done';
+    if (doneByQty && hasFact && docsSent) return 'done';
+    if (doneByQty && hasFact && !docsSent) return 'missingDocs';
+    return 'inwork';
+  }
+
+  function statusToText(status) {
+    if (status === 'done') return 'Выполнен';
+    if (status === 'missingDocs') return 'Нет документов';
+    return 'В работе';
+  }
+
+  function renderStatusBadge(status) {
+    var cls = (status === 'done') ? 'badge-done' : (status === 'missingDocs' ? 'badge-missing' : 'badge-progress');
+    return '<span class="contracts-badge ' + cls + '">' + escapeHtml(statusToText(status)) + '</span>';
+  }
+
+  function statusSortValue(status) {
+    if (status === 'done') return 3;
+    if (status === 'missingDocs') return 2;
+    return 1;
+  }
+
+  /* ===== Table ===== */
+
+  function renderTable() {
+    var area = document.getElementById('dataArea');
+    if (area) area.classList.remove('contract-form-mode');
+    document.body.classList.remove('contract-form-open');
+    var prevScroll = area ? area.scrollTop : 0;
+
+    var style =
+      '<style>' +
+        '#dataArea{padding:0 12px 12px;background:var(--bg-app);}' +
+        '.contracts-host{margin-top:2px;padding-top:0;}' +
+        
+        /* Table Layout & Reset */
+        '.contracts-table{width:100%;border-collapse:separate;border-spacing:0 6px;table-layout:fixed;margin-top:10px;background:transparent;border:none;box-shadow:none;}' +
+
+        
+        /* Headers */
+        '.contracts-table thead th{position:sticky;top:0;z-index:30;padding:12px 10px;text-align:left;font-weight:800;font-size:12px;color:#64748b;background:#f8fafc;letter-spacing:.02em;border:none;text-transform:uppercase;}' +
+        '.contracts-table thead th:first-child{border-top-left-radius:14px;padding-left:18px;}' +
+        '.contracts-table thead th:last-child{border-top-right-radius:14px;padding-right:18px;}' +
+        
+        /* Column Widths (Total 100%) */
+        '.contracts-table td:nth-child(1),.contracts-table th:nth-child(1){width:32%;text-align:left;}' +
+        '.contracts-table td:nth-child(2),.contracts-table th:nth-child(2){width:26%;}' +
+        '.contracts-table td:nth-child(3),.contracts-table th:nth-child(3){width:20%;}' +
+        '.contracts-table td:nth-child(4),.contracts-table th:nth-child(4){width:14%;}' +
+        '.contracts-table td:nth-child(5),.contracts-table th:nth-child(5){width:8%;text-align:right;}' +
+
+        /* Rows */
+        '.contracts-table tr.data-row{background:#fbfcfe;border-radius:18px;box-shadow:0 10px 26px rgba(148,163,184,0.18);overflow:hidden;position:relative;transition:background-color .1s ease,box-shadow .1s ease,transform .1s ease;}' +
+        /* Добавлена транзакция цвета для TD */
+        '.contracts-table tr.data-row td{padding:12px 16px;vertical-align:middle;font-size:14px;color:var(--text-main);line-height:1.15;height:84px;border:none;transition:background-color .1s ease;}' +
+
+        
+        /* Hover: красим и TR и TD, чтобы не было дыр */
+        '.contracts-table tr.data-row:hover{background:#f5f7fb;box-shadow:0 16px 36px rgba(148,163,184,0.22);transform:translateY(-2px);}' +
+        '.contracts-table tr.data-row:hover td{background:#f5f7fb;}' +
+        '.contracts-table tr.data-row:hover .main-title{color:#4b6b9a;}' +
+        
+        /* Selection: Принудительно красим TD в тот же цвет, исправляет "белую полосу" */
+        '.contracts-table tr.data-row-selected{background:#eef2f7 !important;box-shadow:0 14px 30px rgba(148,163,184,0.2);}' +
+        '.contracts-table tr.data-row-selected td{background:#eef2f7 !important;}' +
+        
+        /* Corners Radius */
+        '.contracts-table td:first-child{border-top-left-radius:18px;border-bottom-left-radius:18px;}' +
+        '.contracts-table td:last-child{border-top-right-radius:18px;border-bottom-right-radius:18px;}' +
+
+        /* Inner Cell Styles */
+        '.cell-main{position:relative;padding:12px 16px 12px 72px !important;}' +
+'.cell-main .accent{position:absolute;left:14px;top:12px;bottom:12px;width:3px;border-radius:999px;background:#e2e8f0;}' +
+'.cell-main .accent.done{background:#9ed7b5;box-shadow:none;}' +
+'.cell-main .accent.progress{background:#f4c88a;box-shadow:none;}' +
+'.cell-main .accent.missing{background:#f2a3a3;box-shadow:none;}' +
+'.cell-main .main-top{display:flex;align-items:center;gap:10px;margin-bottom:6px;}' +
+'.cell-main .main-title{font-size:16px;font-weight:700;color:var(--text-main);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}' +
+'.cell-main .main-dates{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;color:var(--text-main);margin-top:4px;}' +
+
+        '.cell-main .order{font-size:12px;color:#94a3b8;font-weight:600;}' +
+        '.cell-main .main-title{font-size:18px;font-weight:700;color:var(--text-main);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}' +
+        '.cell-main .main-dates{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--text-main);margin-top:8px;}' +
+        '.cell-main .deadline{color:var(--text-main);font-weight:500;}' +
+        '.cell-main .date-arrow{color:#94a3b8;font-weight:700;}' +
+        
+        '.cell-customer{padding:20px 18px;}' +
+'.cell-customer-wrap{display:flex;align-items:center;gap:10px;min-width:0;width:100%;}' +
+
+        '.customer-avatar{width:34px;height:34px;border-radius:12px;background:#eef0ff;color:#4f46e5;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(99,102,241,0.18);border:none;font-size:12px;flex-shrink:0;}' +
+        '.customer-info{display:flex;flex-direction:column;gap:3px;min-width:0;}' +
+        '.customer-name{font-size:15px;font-weight:800;color:var(--text-main);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '.customer-sub{font-size:12px;color:var(--text-muted);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        
+        '.cell-item .item-name{font-size:14px;font-weight:700;color:var(--text-main);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '.cell-item .item-meta{font-size:12px;color:var(--text-muted);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        
+        '.contracts-planfact{border:none;border-radius:12px;padding:10px 12px;background:#f4f6f9;display:flex;flex-direction:column;gap:6px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.8);}' +
+        '.contracts-plan-row{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--text-main);}' +
+        '.contracts-plan-row .lbl{color:var(--text-muted);font-weight:700;min-width:40px;}' +
+        '.contracts-plan-row .val.plan{color:var(--text-main);font-weight:600;}' +
+        '.contracts-plan-row .val.fact{color:var(--text-main);font-weight:600;}' +
+        '.contracts-plan-row .val.fact.fact-green{color:#0f9d58;}' +
+
+        '.contracts-badge{display:inline-flex;align-items:center;justify-content:center;padding:6px 12px;border-radius:999px;font-weight:700;font-size:11.5px;text-transform:none;letter-spacing:.01em;min-width:104px;border:1px solid rgba(148,163,184,0.3);background:rgba(248,250,252,0.7);}' +
+        '.contracts-badge.badge-done{color:#3a7f5a;border-color:rgba(97,167,125,0.35);}' +
+        '.contracts-badge.badge-progress{color:#a36a1f;border-color:rgba(216,168,97,0.35);}' +
+        '.contracts-badge.badge-missing{color:#b35656;border-color:rgba(214,137,137,0.35);}' +
+        
+        '.cell-ellipsis{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '.contract-link{color:#4c74a8;font-weight:800;text-decoration:none;display:inline-block;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '.contract-link:hover{text-decoration:underline;}' +
+        
+        '.contracts-actions{display:flex;align-items:center;gap:6px;justify-content:flex-end;}' +
+        '.contracts-action-btn{background:none;border:none;cursor:pointer;color:#94a3b8;font-weight:800;padding:8px;border-radius:10px;opacity:0.6;transition:opacity .15s ease, background .15s ease,color .15s ease;}' +
+        '.contracts-action-btn:hover{background:rgba(148,163,184,0.18);opacity:1;color:#64748b;}' +
+        
+        '.contracts-import-progress{position:fixed;right:24px;top:96px;display:none;align-items:center;gap:10px;padding:10px 14px;border-radius:12px;background:#fff;box-shadow:var(--shadow-elevation-3);border:1px solid var(--divider-color);z-index:70000;}' +
+        '.contracts-import-progress .spinner{width:18px;height:18px;border:3px solid #e0e0e0;border-top-color:#1a73e8;border-radius:50%;animation:spin 1s linear infinite;}' +
+        '.contracts-toast{position:fixed;left:16px;bottom:16px;z-index:65000;background:#202124;color:#fff;padding:10px 12px;border-radius:12px;box-shadow:0 10px 24px rgba(0,0,0,0.25);font-size:13px;display:none;}' +
+        'body.theme-dark #dataArea{background:#0b1020;}' +
+        'body.theme-dark .contracts-table thead th{background:#0b1220;color:#94a3b8;}' +
+        'body.theme-dark .contracts-table tr.data-row{background:#0b1220;box-shadow:0 12px 28px rgba(0,0,0,0.45);}' +
+        'body.theme-dark .contracts-table tr.data-row td{color:#f8fafc;background:#0b1220;}' +
+        'body.theme-dark .contracts-table tr.data-row:hover{background:#0f172a;box-shadow:0 0 0 1px rgba(96,165,250,0.35);}' +
+        'body.theme-dark .contracts-table tr.data-row:hover td{background:#0f172a;}' +
+        'body.theme-dark .contracts-table tr.data-row-selected{background:#101a2f !important;box-shadow:0 0 0 1px rgba(96,165,250,0.45);}' +
+        'body.theme-dark .contracts-table tr.data-row-selected td{background:#101a2f !important;}' +
+        'body.theme-dark .contracts-planfact{background:#0f172a;border-color:rgba(255,255,255,0.08);}' +
+        'body.theme-dark #dataArea.contract-form-mode{padding:0!important;background:#0b1220;}' +
+        'body.theme-dark .contract-page{background:#0b1220;color:#f8fafc;}' +
+        'body.theme-dark .ct-topbar{background:#0b1220;box-shadow:0 6px 14px rgba(0,0,0,0.45);}' +
+        'body.theme-dark .ct-back{background:#0f172a;border-color:rgba(255,255,255,0.08);color:#e2e8f0;}' +
+        'body.theme-dark .ct-title{color:#f8fafc;}' +
+        'body.theme-dark .ct-subtitle{color:#94a3b8;}' +
+        'body.theme-dark .ct-status{color:#f8fafc;}' +
+        'body.theme-dark .ct-card{background:#0f172a;border-color:rgba(255,255,255,0.08);box-shadow:0 10px 24px rgba(0,0,0,0.4);}' +
+        'body.theme-dark .ct-card-head{border-bottom-color:rgba(255,255,255,0.08);}' +
+        'body.theme-dark .ct-card-icon{background:#111827;border-color:rgba(255,255,255,0.08);color:#93c5fd;}' +
+        'body.theme-dark .ct-card-title{color:#f8fafc;}' +
+        'body.theme-dark .ct-card-sub{color:#94a3b8;}' +
+        'body.theme-dark .ct-label{color:#94a3b8;}' +
+        'body.theme-dark .ct-input{background:#0b1220;border-color:rgba(255,255,255,0.08);color:#f8fafc;}' +
+        'body.theme-dark .ct-input:focus{border-color:#60a5fa;box-shadow:0 0 0 3px rgba(96,165,250,0.2);}' +
+        'body.theme-dark .ct-icon{color:#94a3b8;}' +
+        'body.theme-dark .ct-dropdown-list{background:#0b1220;border-color:rgba(255,255,255,0.08);box-shadow:0 16px 32px rgba(0,0,0,0.5);}' +
+        'body.theme-dark .ct-dropdown-list .combo-item{color:#e2e8f0;}' +
+        'body.theme-dark .ct-dropdown-list .combo-item:hover{background:#101a2f;}' +
+        'body.theme-dark .ct-dropdown-list .combo-item.selected{background:#111827;color:#bfdbfe;}' +
+        'body.theme-dark .ct-progress{background:#0b1220;border-color:rgba(255,255,255,0.08);}' +
+        'body.theme-dark .ct-progress-head{color:#94a3b8;}' +
+        'body.theme-dark .ct-progress-bar{background:#111827;}' +
+        'body.theme-dark .ct-progress-bar span{background:#3b82f6;}' +
+        'body.theme-dark .ct-help{color:#94a3b8;}' +
+        'body.theme-dark .ct-option{background:#0b1220;border-color:rgba(255,255,255,0.08);}' +
+        'body.theme-dark .ct-option-title{color:#f8fafc;}' +
+        'body.theme-dark .ct-option-sub{color:#94a3b8;}' +
+        'body.theme-dark .customer-name{color:#e2e8f0;}' +
+        'body.theme-dark .customer-sub{color:#94a3b8;}' +
+        'body.theme-dark .cell-main .order{color:#64748b;}' +
+      '</style>';
+
+    var data = contractsCache.slice().map(function (c) {
+      c.remainingQty = (Number(c.qty) || 0) - (Number(c.delivered) || 0);
+      return c;
+    });
+
+    // sort
+    data.sort(function (a, b) {
+      var f = lastSortField;
+      var av, bv;
+
+      if (f === 'order') {
+        av = Number(a.__order) || 0;
+        bv = Number(b.__order) || 0;
+      } else if (f === 'status') {
+        av = statusSortValue(calcStatusFromHeader(a));
+        bv = statusSortValue(calcStatusFromHeader(b));
+      } else if (f === 'date' || f === 'deadline' || f === 'dateFact' || f === 'planDate') {
+        av = parseDate(a[f]); bv = parseDate(b[f]);
+        if (f === 'dateFact') {
+          if (!av && !bv) return 0;
+          if (!av) return 1;
+          if (!bv) return -1;
+        }
+        av = av ? av.getTime() : 0;
+        bv = bv ? bv.getTime() : 0;
+      } else if (f === 'org' || f === 'number' || f === 'supplier' || f === 'item') {
+        av = (a[f] || '').toString().toLowerCase();
+        bv = (b[f] || '').toString().toLowerCase();
+      } else if (f === 'qty' || f === 'planQty' || f === 'delivered') {
+        av = Number(a[f]) || 0;
+        bv = Number(b[f]) || 0;
+      } else {
+        av = 0; bv = 0;
+      }
+
+      var res = (av < bv) ? -1 : (av > bv) ? 1 : 0;
+      return sortAsc ? res : -res;
+    });
+
+    var html =
+      style +
+      '<div class="contracts-host">' +
+      '<table class="contracts-table" id="contractsTable">' +
+        '<thead>' +
+          '<tr>' +
+            '<th>Договор / статус</th>' +
+            '<th>Заказчик</th>' +
+            '<th>Предмет закупки</th>' +
+            '<th>Сроки</th>' +
+            '<th></th>' + // Added 5th header for actions
+          '</tr>' +
+        '</thead>' +
+        '<tbody>';
+
+    var searchFilter = (currentSearch || '').toLowerCase();
+
+    data.forEach(function (c) {
+      var status = calcStatusFromHeader(c);
+
+      if (currentStatusFilter !== 'all' && status !== currentStatusFilter) return;
+
+      if (searchFilter) {
+        var text = ((c.number || '') + ' ' + (c.org || '') + ' ' + (c.supplier || '') + ' ' + (c.item || '')).toLowerCase();
+        if (text.indexOf(searchFilter) === -1) return;
+      }
+
+      var rowClass = calcRowClass(c, status);
+
+      html +=
+        '<tr class="data-row ' + rowClass + '" data-id="' + escapeHtml(c.id || '') + '">' +
+          '<td class="cell-main">' +
+            '<div class="accent ' + badgeClass(status) + '"></div>' +
+            '<div class="main-top">' +
+              '<span class="order">#' + padOrder(c.__order) + '</span>' +
+              renderStatusBadge(status) +
+            '</div>' +
+            '<div class="main-title">' + escapeHtml(c.number || '') + '</div>' +
+            '<div class="main-dates"><span class="date-icon">📅</span><span>' + escapeHtml(formatDateRu(c.date) || '') + '</span><span class="date-arrow">→</span><span class="deadline">' + escapeHtml(formatDateRu(c.deadline) || '') + '</span></div>' +
+          '</td>' +
+          '<td class="cell-customer">' +
+  '<div class="cell-customer-wrap">' +
+    '<div class="customer-avatar">' + escapeHtml(initials(c.org)) + '</div>' +
+    '<div class="customer-info">' +
+      '<div class="customer-name">' + escapeHtml(c.org || '') + '</div>' +
+      '<div class="customer-sub">' + escapeHtml(c.supplier || '') + '</div>' +
+    '</div>' +
+  '</div>' +
+'</td>' +
+          '<td class="cell-item">' +
+            '<div class="item-name">' + escapeHtml(c.item || '') + '</div>' +
+            '<div class="item-meta">🔗 ' + (Number(c.qty) ? Number(c.qty) + ' шт.' : '—') + '</div>' +
+          '</td>' +
+          '<td class="cell-deadline">' + renderPlanFactCell(c) + '</td>' +
+          '<td class="cell-actions">' + renderActionsCell(c) + '</td>' + // Added 5th cell
+        '</tr>';
+    });
+
+    html +=
+        '</tbody>' +
+      '</table>' +
+      '<div class="contracts-scroll-spacer" id="contractsScrollSpacer"></div>' +
+      '<div class="contracts-toast" id="contractsToast"></div>' +
+      '</div>';
+
+    setDataAreaContent(html);
+
+    var table = document.getElementById('contractsTable');
+    if (!table) return;
+
+    if (area) {
+      try { area.scrollTop = prevScroll; } catch (e) {}
+    }
+
+    if (typeof makeTableResizable === 'function') makeTableResizable(table);
+
+    bindRowSelectionAndContext(table);
+    bindDocsCheckboxes(table);
+    restoreSelection();
+
+    adjustScrollSpacer();
+    bindResizeForSpacer();
+    bindPasteHotspot();
+  }
+
+  function tdCell(field, displayValue, type, editable, extraClass, isHtml) {
+    var cls = (editable ? 'editable ' : '') + (extraClass ? extraClass : '');
+    var ed = editable ? ' data-editable="1"' : '';
+    var content = isHtml ? (displayValue == null ? '' : String(displayValue)) : escapeHtml(displayValue == null ? '' : String(displayValue));
+    return (
+      '<td class="' + cls + '" data-field="' + escapeHtml(field) + '" data-type="' + escapeHtml(type) + '"' + ed + '>' +
+        content +
+      '</td>'
+    );
+  }
+
+  function renderNumberCell(c) {
+    if (c && c.linkUrl) {
+      var href = escapeAttr(c.linkUrl);
+      var title = escapeHtml(c.number || 'Документ');
+      return '<a class="contract-link cell-ellipsis" href="' + href + '" target="_blank" rel="noopener">' + title + '</a>';
+    }
+    var plain = c && c.number ? escapeHtml(c.number) : '';
+    return '<span class="cell-ellipsis">' + plain + '</span>';
+  }
+
+  function renderDatesCell(c) {
+    var contractDate = formatDateRu(c.date);
+    var deadline = formatDateRu(c.deadline);
+    var deadlineText = deadline ? ('до ' + deadline) : '';
+    return (
+      '<div class="contracts-date-cell">' +
+        '<div class="contracts-date-icon">📅</div>' +
+        '<div class="contracts-date-text">' +
+          '<div class="contracts-date-main">' + escapeHtml(contractDate || '') + '</div>' +
+          '<div class="contracts-date-deadline">' + escapeHtml(deadlineText) + '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderOrgCell(c) {
+    return (
+      '<div class="contracts-org-cell">' +
+        '<div class="org">' + escapeHtml(c.org || '') + '</div>' +
+        '<div class="supplier">' + escapeHtml(c.supplier || '') + '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderItemCell(c) {
+    return (
+      '<div class="contracts-item-cell">' +
+        '<div class="item">' + escapeHtml(c.item || '') + '</div>' +
+        '<div class="qty">Кол-во по контракту: ' + escapeHtml(String(Number(c.qty) || 0)) + '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderPlanFactCell(c) {
+    var plan = formatDateRu(c.planDate);
+    var fact = formatDateRu(c.dateFact);
+    return (
+      '<div class="contracts-planfact">' +
+        '<div class="contracts-plan-row"><span class="lbl">План:</span><span class="val plan">' + escapeHtml(plan || '—') + '</span></div>' +
+        '<div class="contracts-plan-row"><span class="lbl">Факт:</span><span class="val fact ' + (fact ? 'fact-green' : '') + '">' + escapeHtml(fact || '—') + '</span></div>' +
+      '</div>'
+    );
+  }
+
+  function renderActionsCell(c) {
+    var id = escapeHtml(c.id || '');
+    return (
+      '<div class="contracts-actions">' +
+        '<button type="button" class="contracts-action-btn" title="Редактировать" onclick="UIContracts.edit(\'' + id + '\')">✎</button>' +
+        '<button type="button" class="contracts-action-btn" title="Удалить" onclick="UIContracts.remove(\'' + id + '\')">🗑</button>' +
+      '</div>'
+    );
+  }
+
+  function calcRowClass(c, status) {
+    return '';
+  }
+
+  function badgeClass(status) {
+    return (status === 'done') ? 'done' : (status === 'missingDocs' ? 'missing' : 'progress');
+  }
+
+  function padOrder(n) {
+    if (n == null) return '';
+    var s = String(n);
+    while (s.length < 4) s = '0' + s;
+    return s;
+  }
+
+  function initials(text) {
+    var t = (text || '').trim();
+    if (!t) return 'ОР';
+    var parts = t.split(/\s+/);
+    var res = parts.map(function (p) { return p[0] || ''; }).join('').slice(0, 2).toUpperCase();
+    return res || 'ОР';
+  }
+
+
+  /* ===== Sorting ===== */
+
+  function sortBy(field) {
+    if (lastSortField === field) sortAsc = !sortAsc;
+    else { lastSortField = field; sortAsc = true; }
+    renderTable();
+  }
+
+  function sortByDateField(field) {
+    if (lastSortField !== field) { lastSortField = field; sortAsc = true; }
+    else sortAsc = !sortAsc;
+    renderTable();
+  }
+
+  function sortArrow(field) {
+    if (lastSortField !== field) return '<span class="sort-indicator" style="color:#5f6368;margin-left:4px;font-size:11px;">↕</span>';
+    return '<span class="sort-indicator" style="color:#5f6368;margin-left:4px;font-size:11px;">' + (sortAsc ? '▲' : '▼') + '</span>';
+  }
+
+  /* ===== Selection + Context menu ===== */
+
+  function bindRowSelectionAndContext(table) {
+    ensureContextMenu();
+
+    var body = table.querySelector('tbody');
+    if (!body || body.dataset.ctxBound) return;
+    body.dataset.ctxBound = '1';
+
+    body.addEventListener('mousedown', function (e) {
+      if (activeEditor && activeEditor.td && activeEditor.td.contains(e.target)) return;
+
+      var row = e.target.closest('tr.data-row');
+      if (!row) return;
+      var multi = !!(e.ctrlKey || e.metaKey);
+      selectionChangedOnMouseDown = !!selectRow(row, multi);
+    });
+
+    body.addEventListener('contextmenu', function (e) {
+      var row = e.target.closest('tr.data-row');
+      if (!row) return;
+      e.preventDefault();
+
+      commitActiveEditor(true);
+
+      var multi = !!(e.ctrlKey || e.metaKey);
+      selectRow(row, multi);
+      openContextMenu(e.pageX, e.pageY);
+    });
+
+    body.addEventListener('dblclick', function (e) {
+      var row = e.target.closest('tr.data-row');
+      if (!row) return;
+      var id = row.getAttribute('data-id');
+      if (id) edit(id);
+    });
+
+    // клик вне — убрать выделение/закрыть меню
+    if (!document.body.dataset.contractsCtxOutsideBound) {
+      document.body.dataset.contractsCtxOutsideBound = '1';
+      document.addEventListener('mousedown', function (e) {
+        if (ctxMenuEl && ctxMenuEl.contains(e.target)) return;
+        if (activeEditor && activeEditor.td && activeEditor.td.contains(e.target)) return;
+        hideContextMenu();
+      });
+      document.addEventListener('scroll', function () { hideContextMenu(); }, true);
+    }
+  }
+
+  function isRowSelected(id) {
+    return selectedIds.indexOf(id) !== -1;
+  }
+
+  function clearSelection() {
+    var prev = document.querySelectorAll('#contractsTable tr.data-row-selected');
+    Array.prototype.forEach.call(prev, function (r) { r.classList.remove('data-row-selected'); });
+    selectedIds = [];
+    lastSelectedId = null;
+    cellEditArmed = null;
+    setActiveCell(null);
+  }
+
+  function selectRow(row, multi) {
+  var id = row.getAttribute('data-id') || null;
+  if (!id) return false;
+
+  // если кликнули по уже выбранной строке (одиночное выделение) — НИЧЕГО не делаем
+  if (!multi && selectedIds.length === 1 && selectedIds[0] === id) {
+    return false;
+  }
+
+  var changed = false;
+
+  if (multi) {
+    if (isRowSelected(id)) {
+      row.classList.remove('data-row-selected');
+      selectedIds = selectedIds.filter(function (x) { return x !== id; });
+      lastSelectedId = selectedIds.length ? selectedIds[selectedIds.length - 1] : null;
+      changed = true;
+    } else {
+      row.classList.add('data-row-selected');
+      selectedIds.push(id);
+      lastSelectedId = id;
+      changed = true;
+    }
+    return changed;
+  }
+
+  // обычный клик по другой строке
+  clearSelection();
+  row.classList.add('data-row-selected');
+  selectedIds = [id];
+  lastSelectedId = id;
+  return true;
+}
+
+  function openById(id) {
+    if (!id) return;
+    if (typeof openModuleTab === 'function') openModuleTab('contracts');
+    var attempts = 0;
+    var trySelect = function () {
+      attempts += 1;
+      var table = document.getElementById('contractsTable');
+      if (!table) {
+        if (attempts < 12) setTimeout(trySelect, 150);
+        return;
+      }
+      var rows = table.querySelectorAll('tbody tr.data-row');
+      var target = null;
+      Array.prototype.forEach.call(rows, function (row) {
+        if (row.getAttribute('data-id') === id) target = row;
+      });
+      if (!target) {
+        if (attempts < 12) setTimeout(trySelect, 150);
+        return;
+      }
+      selectRow(target, false);
+      try {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch (e) {
+        target.scrollIntoView(true);
+      }
+    };
+    setTimeout(trySelect, 0);
+  }
+
+
+  function restoreSelection() {
+    var rows = document.querySelectorAll('#contractsTable tbody tr.data-row');
+    Array.prototype.forEach.call(rows, function (row) {
+      var id = row.getAttribute('data-id') || null;
+      if (id && isRowSelected(id)) {
+        row.classList.add('data-row-selected');
+      }
+    });
+  }
+
+  function ensureContextMenu() {
+    if (ctxMenuEl) return;
+    ctxMenuEl = document.createElement('div');
+    ctxMenuEl.className = 'row-context-menu';
+    ctxMenuEl.style.display = 'none';
+    ctxMenuEl.innerHTML =
+      '<div class="row-context-item" data-action="edit">Редактировать</div>' +
+      '<div class="row-context-item row-context-item-danger" data-action="delete">Удалить</div>';
+    document.body.appendChild(ctxMenuEl);
+
+    ctxMenuEl.addEventListener('click', function (e) {
+      var item = e.target.closest('[data-action]');
+      if (!item) return;
+      var a = item.getAttribute('data-action');
+      hideContextMenu();
+
+      if (!selectedIds.length && (a === 'edit' || a === 'delete')) return;
+
+      if (a === 'edit') {
+        if (selectedIds.length !== 1) {
+          toast('Выберите одну строку для редактирования');
+        } else {
+          edit(selectedIds[0]);
+        }
+      }
+      if (a === 'delete') removeSelected();
+    });
+  }
+
+  function openContextMenu(x, y) {
+    if (!ctxMenuEl) return;
+    ctxMenuEl.style.left = x + 'px';
+    ctxMenuEl.style.top = y + 'px';
+    ctxMenuEl.style.display = 'block';
+  }
+
+  function hideContextMenu() {
+    if (ctxMenuEl) ctxMenuEl.style.display = 'none';
+  }
+
+  /* ===== Active cell outline ===== */
+
+  function setActiveCell(td, preserveArming) {
+    var prev = activeCellEl;
+    if (prev && prev !== td) prev.classList.remove('cell-active');
+    activeCellEl = td;
+    if (activeCellEl) activeCellEl.classList.add('cell-active');
+
+    if (preserveArming) return;
+
+    if (!td || prev !== td) cellEditArmed = null;
+  }
+
+  /* ===== Inline editing (ONLY ON CLICK) ===== */
+
+  function bindCellEditing(table) {
+    var body = table.querySelector('tbody');
+    if (!body || body.dataset.inlineBound) return;
+    body.dataset.inlineBound = '1';
+
+    body.addEventListener('click', function (e) {
+      var td = e.target.closest('td[data-editable="1"]');
+      if (!td) return;
+      if (e.button !== 0) return;
+      if (e.ctrlKey || e.metaKey) return; // при мультивыделении не редактируем
+      if (e.target.closest('button')) return;
+
+      var row = td.closest('tr.data-row');
+      var id = row ? row.getAttribute('data-id') : null;
+      if (!row || !id) return;
+
+      // всегда подсвечиваем строку и ячейку первым кликом
+      selectRow(row, false);
+      setActiveCell(td, true);
+
+      // если это второй подряд клик по той же ячейке — открываем редактор
+      if (cellEditArmed === td) {
+        cellEditArmed = null;
+        startCellEdit(td);
+      } else {
+        cellEditArmed = td;
+      }
+
+      selectionChangedOnMouseDown = false;
+    });
+
+    body.addEventListener('dblclick', function (e) {
+      var td = e.target.closest('td[data-editable="1"]');
+      if (!td) return;
+      var row = td.closest('tr.data-row');
+      if (row) selectRow(row, false);
+      setActiveCell(td, true);
+      cellEditArmed = null;
+      startCellEdit(td);
+    });
+
+
+    // клик вне таблицы — коммитим редактор
+    if (!document.body.dataset.contractsEditorOutsideBound) {
+      document.body.dataset.contractsEditorOutsideBound = '1';
+      document.addEventListener('mousedown', function (e) {
+        if (!activeEditor) return;
+
+        // если кликаем в список подсказок — не коммитим сразу
+        if (activeEditor.listEl && activeEditor.listEl.contains(e.target)) return;
+        if (activeEditor.td && activeEditor.td.contains(e.target)) return;
+        if (e.target.closest('.calendar-popup')) return;
+
+        commitActiveEditor(true);
+      }, true);
+    }
+  }
+
+  function bindDocsCheckboxes(table) {
+    if (!table || table.dataset.docsBound) return;
+    table.dataset.docsBound = '1';
+
+    table.addEventListener('click', function (e) {
+      var cb = e.target.closest('.docs-sent-checkbox');
+      if (!cb) return;
+      e.stopPropagation();
+    });
+
+    table.addEventListener('change', function (e) {
+      var cb = e.target.closest('.docs-sent-checkbox');
+      if (!cb) return;
+      var id = cb.getAttribute('data-id') || '';
+      toggleDocsSent(id, cb.checked, cb);
+      e.stopPropagation();
+    });
+  }
+
+  function startCellEdit(td) {
+    if (!td) return;
+    cellEditArmed = null;
+    if (activeEditor && activeEditor.td === td) return;
+
+    cellEditArmed = null;
+
+    // закрыть предыдущий редактор
+    commitActiveEditor(true);
+
+    var field = td.getAttribute('data-field');
+    var type  = td.getAttribute('data-type');
+
+    var row = td.closest('tr[data-id]');
+    if (!row) return;
+    var id = row.getAttribute('data-id');
+    if (!id) return;
+
+    var c = contractsCache.find(function (x) { return x.id === id; });
+    if (!c) return;
+
+    var oldDisplay = (td.textContent || '').trim();
+
+    var wrap = document.createElement('div');
+    wrap.className = 'cell-inline-wrap';
+
+    var input = document.createElement('input');
+    input.className = 'cell-inline-input';
+    input.autocomplete = 'off';
+
+    var list = document.createElement('div');
+    list.className = 'cell-inline-list';
+
+    // initial value
+    if (type === 'date') {
+      input.type = 'text';
+      input.value = oldDisplay;
+    } else if (type === 'number') {
+      input.type = 'number';
+      input.value = String(Number(c[field]) || 0);
+    } else {
+      input.type = 'text';
+      input.value = oldDisplay;
+    }
+
+    wrap.appendChild(input);
+
+    td.innerHTML = '';
+    td.appendChild(wrap);
+
+    activeEditor = {
+      td: td,
+      input: input,
+      listEl: list,
+      field: field,
+      type: type,
+      contractId: id,
+      oldDisplay: oldDisplay
+    };
+
+    // datepicker only on click/focus
+    if (type === 'date' && typeof attachDateInput === 'function') {
+      input.id = 'ctInline_' + field + '_' + Math.floor(Math.random() * 1e9);
+      attachDateInput(input.id);
+    }
+
+    // dropdown sources
+    if (type === 'org' || type === 'supplier' || type === 'item') {
+      input.addEventListener('click', function () { openInlineSuggest(type); });
+      input.addEventListener('input', function () { openInlineSuggest(type); });
+    }
+
+    if (type === 'date') {
+      var commitIfStable = function () { commitActiveEditor(true); };
+      input.addEventListener('change', commitIfStable);
+      input.addEventListener('input', function () {
+        // календарь пишет готовое значение в input, сохраняем сразу
+        var v = (input.value || '').trim();
+        if (!editorIgnoreBlur && /^\d{2}\.\d{2}\.\d{4}$/.test(v)) commitIfStable();
+      });
+    }
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitActiveEditor(true);
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        commitActiveEditor(false);
+      }
+      // Tab: коммит и идём дальше по строке
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        var goBack = e.shiftKey;
+        commitActiveEditor(true);
+        focusNextEditableCell(td, goBack);
+      }
+    });
+
+    input.addEventListener('blur', function () {
+      setTimeout(function () {
+        if (editorIgnoreBlur) return;
+        commitActiveEditor(true);
+      }, 120);
+    });
+
+    // фокус
+    try { input.focus(); input.select(); } catch (e) {}
+    // для даты — кликом открываем календарь, но только после фокуса
+    setTimeout(function () {
+      if (type === 'date') {
+        try { input.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e) {}
+      }
+    }, 0);
+  }
+
+  function openInlineSuggest(type) {
+    if (!activeEditor || !activeEditor.listEl || !activeEditor.input) return;
+
+    var arr = [];
+    if (type === 'org') arr = orgCache || [];
+    if (type === 'supplier') arr = supplierCache || [];
+    if (type === 'item') {
+      arr = (itemsCache || []).map(function (it) { return it && it.name ? it.name : ''; }).filter(Boolean);
+    }
+
+    var q = (activeEditor.input.value || '').trim().toLowerCase();
+    var html = '';
+    var count = 0;
+
+    arr.forEach(function (v) {
+      var t = String(v || '').trim();
+      if (!t) return;
+      if (q && t.toLowerCase().indexOf(q) === -1) return;
+      if (count >= 80) return;
+      html += '<div class="cell-inline-item" data-value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</div>';
+      count++;
+    });
+
+    if (!html) html = '<div class="cell-inline-item" style="opacity:.7;cursor:default">Ничего не найдено</div>';
+
+    activeEditor.listEl.innerHTML = html;
+    positionListNearInput(activeEditor.listEl, activeEditor.input);
+    activeEditor.listEl.style.display = 'block';
+
+    Array.prototype.forEach.call(activeEditor.listEl.querySelectorAll('.cell-inline-item[data-value]'), function (el) {
+      el.onmousedown = function () { editorIgnoreBlur = true; }; // чтобы blur не схлопнул до клика
+      el.onclick = function () {
+        var v = el.getAttribute('data-value') || '';
+        activeEditor.input.value = v;
+        activeEditor.listEl.style.display = 'none';
+        editorIgnoreBlur = false;
+        commitActiveEditor(true);
+      };
+    });
+  }
+
+  function commitActiveEditor(save) {
+    if (!activeEditor) return;
+
+    var td = activeEditor.td;
+    var field = activeEditor.field;
+    var type = activeEditor.type;
+    var id = activeEditor.contractId;
+    var input = activeEditor.input;
+
+    // закрыть список
+    if (activeEditor.listEl) activeEditor.listEl.style.display = 'none';
+    if (activeEditor.listEl && activeEditor.listEl.parentNode === document.body) {
+      document.body.removeChild(activeEditor.listEl);
+    }
+    editorIgnoreBlur = false;
+
+    var c = contractsCache.find(function (x) { return x.id === id; });
+    if (!c) {
+      // fallback restore
+      td.textContent = activeEditor.oldDisplay;
+      activeEditor = null;
+      return;
+    }
+
+    if (!save) {
+      td.textContent = activeEditor.oldDisplay;
+      activeEditor = null;
+      return;
+    }
+
+    var newValDisplay = (input && input.value != null) ? String(input.value).trim() : '';
+    var oldDisplay = (activeEditor.oldDisplay || '').trim();
+
+    if (newValDisplay === oldDisplay) {
+      td.textContent = oldDisplay;
+      activeEditor = null;
+      return;
+    }
+
+    var payload = buildPayloadFromContract(c);
+
+    if (field === 'date' || field === 'deadline' || field === 'planDate' || field === 'dateFact') {
+      payload[field] = parseRuDateToIso(newValDisplay) || '';
+    } else if (field === 'qty' || field === 'planQty' || field === 'delivered') {
+      payload[field] = Number(newValDisplay.replace(',', '.')) || 0;
+    } else {
+      payload[field] = newValDisplay || '';
+    }
+
+    // легкая защита
+    if (field === 'date' && !payload.date) {
+      toast('Дата контракта должна быть корректной');
+      td.textContent = formatDateRu(c.date);
+      activeEditor = null;
+      return;
+    }
+
+    // optimistic UI (красиво как “дорогое приложение”)
+    // сначала рисуем значение, потом если ошибка — откат
+    td.textContent = (type === 'date') ? formatDateRu(payload[field]) : (payload[field] == null ? '' : String(payload[field]));
+
+    google.script.run
+      .withSuccessHandler(function (r) {
+        if (!r || !r.success) {
+          toast('Не удалось сохранить изменение');
+          td.textContent = oldDisplay;
+          activeEditor = null;
+          return;
+        }
+
+        // undo
+        pushUndo({ kind: 'update', id: id, field: field, oldVal: oldDisplay, newVal: newValDisplay });
+
+        // apply local immediately
+        applyPayloadToContract(c, payload);
+        var rowEl = td.closest('tr[data-id]');
+        updateRowComputed(rowEl, c);
+        updateSingleCellDisplay(td, c);
+
+        if (r.data) {
+          applyServerContract(c, r.data);
+          updateRowComputed(rowEl, c);
+          updateSingleCellDisplay(td, c);
+        }
+
+        // upsert caches
+        if (payload.org) upsertCacheValue(orgCache, payload.org);
+        if (payload.supplier) upsertCacheValue(supplierCache, payload.supplier);
+      })
+      .withFailureHandler(function (err) {
+        td.textContent = oldDisplay;
+        applyPayloadToContract(c, buildPayloadFromContract(c));
+        toast('Не удалось сохранить изменение: ' + (err || 'ошибка'));
+      })
+      .appBackend({
+        module: 'contracts',
+        action: 'update',
+        payload: payload
+      });
+
+    activeEditor = null;
+    cellEditArmed = null;
+  }
+
+  function focusNextEditableCell(currentTd, goBack) {
+    var row = currentTd.closest('tr');
+    if (!row) return;
+    var cells = Array.prototype.slice.call(row.querySelectorAll('td[data-editable="1"]'));
+    var idx = cells.indexOf(currentTd);
+    if (idx === -1) return;
+
+    var nextIdx = goBack ? idx - 1 : idx + 1;
+    if (nextIdx < 0 || nextIdx >= cells.length) return;
+
+    setActiveCell(cells[nextIdx]);
+    startCellEdit(cells[nextIdx]);
+  }
+
+  function buildPayloadFromContract(c) {
+    var items = (c && Array.isArray(c.items) && c.items.length)
+      ? c.items.map(function (it) {
+        return {
+          item: it.item || '',
+          qty: Number(it.qty) || 0,
+          planQty: Number(it.planQty) || 0,
+          planDate: it.planDate || '',
+          dateFact: it.dateFact || '',
+          delivered: Number(it.delivered) || 0
+        };
+      })
+      : [{
+        item: c.item || '',
+        qty: Number(c.qty) || 0,
+        planQty: Number(c.planQty) || 0,
+        planDate: c.planDate || '',
+        dateFact: c.dateFact || '',
+        delivered: Number(c.delivered) || 0
+      }];
+
+    if (!items.length) {
+      items.push({
+        item: c.item || '',
+        qty: Number(c.qty) || 0,
+        planQty: Number(c.planQty) || 0,
+        planDate: c.planDate || '',
+        dateFact: c.dateFact || '',
+        delivered: Number(c.delivered) || 0
+      });
+    } else {
+      items[0] = {
+        item: c.item || '',
+        qty: Number(c.qty) || 0,
+        planQty: Number(c.planQty) || 0,
+        planDate: c.planDate || '',
+        dateFact: c.dateFact || '',
+        delivered: Number(c.delivered) || 0
+      };
+    }
+
+    return {
+      id: c.id || '',
+      number: c.number || '',
+      date: c.date || '',
+      deadline: c.deadline || '',
+      supplier: c.supplier || '',
+      org: c.org || '',
+      item: c.item || '',
+      qty: Number(c.qty) || 0,
+      planQty: Number(c.planQty) || 0,
+      planDate: c.planDate || '',
+      delivered: Number(c.delivered) || 0,
+      dateFact: c.dateFact || '',
+      docsSent: !!c.docsSent,
+      forceDone: !!c.forceDone,
+      linkUrl: c.linkUrl || '',
+      items: items
+    };
+  }
+
+  function applyPayloadToContract(c, p) {
+    var items = (p && Array.isArray(p.items)) ? p.items.slice() : [];
+    c.number = p.number;
+    c.date = p.date;
+    c.deadline = p.deadline;
+    c.supplier = p.supplier;
+    c.org = p.org;
+    c.item = p.item;
+    c.qty = Number(p.qty) || 0;
+    c.planQty = Number(p.planQty) || 0;
+    c.planDate = p.planDate;
+    c.delivered = Number(p.delivered) || 0;
+    c.dateFact = p.dateFact;
+    if (!items.length) {
+      items.push({
+        item: c.item || '',
+        qty: Number(c.qty) || 0,
+        planQty: Number(c.planQty) || 0,
+        planDate: c.planDate || '',
+        dateFact: c.dateFact || '',
+        delivered: Number(c.delivered) || 0
+      });
+    } else {
+      items[0] = {
+        item: c.item || '',
+        qty: Number(c.qty) || 0,
+        planQty: Number(c.planQty) || 0,
+        planDate: c.planDate || '',
+        dateFact: c.dateFact || '',
+        delivered: Number(c.delivered) || 0
+      };
+    }
+    c.items = items;
+    c.docsSent = !!p.docsSent;
+    c.forceDone = !!p.forceDone;
+    c.linkUrl = p.linkUrl || c.linkUrl || '';
+    c.remainingQty = (Number(c.qty) || 0) - (Number(c.delivered) || 0);
+  }
+
+  function updateSingleCellDisplay(td, c) {
+    if (!td || !c) return;
+    var field = td.getAttribute('data-field');
+    var type = td.getAttribute('data-type');
+
+    if (field === 'number') {
+      td.innerHTML = renderNumberCell(c);
+      return;
+    }
+
+    if (type === 'date') {
+      td.textContent = formatDateRu(c[field]);
+      return;
+    }
+
+    td.textContent = c[field] == null ? '' : String(c[field]);
+  }
+
+  function applyServerContract(c, srv) {
+    if (!c || !srv) return;
+    c.number = srv.number || '';
+    c.date = srv.date || '';
+    c.deadline = srv.deadline || '';
+    c.supplier = srv.supplier || '';
+    c.org = srv.org || '';
+    c.item = srv.item || '';
+    c.qty = Number(srv.qty) || 0;
+    c.planQty = Number(srv.planQty) || 0;
+    c.planDate = srv.planDate || '';
+    c.delivered = Number(srv.delivered) || 0;
+    c.dateFact = srv.dateFact || '';
+    c.items = Array.isArray(srv.items) ? srv.items.slice() : [];
+    if (!c.items.length) {
+      c.items.push({
+        item: c.item || '',
+        qty: Number(c.qty) || 0,
+        planQty: Number(c.planQty) || 0,
+        planDate: c.planDate || '',
+        dateFact: c.dateFact || '',
+        delivered: Number(c.delivered) || 0
+      });
+    } else {
+      c.items[0] = {
+        item: c.item || '',
+        qty: Number(c.qty) || 0,
+        planQty: Number(c.planQty) || 0,
+        planDate: c.planDate || '',
+        dateFact: c.dateFact || '',
+        delivered: Number(c.delivered) || 0
+      };
+    }
+    c.docsSent = !!srv.docsSent;
+    c.forceDone = !!srv.forceDone;
+    c.linkUrl = srv.linkUrl || c.linkUrl || '';
+    c.remainingQty = (Number(c.qty) || 0) - (Number(c.delivered) || 0);
+  }
+
+  function updateRowComputed(rowEl, c) {
+    if (!rowEl) return;
+
+    var status = calcStatusFromHeader(c);
+    var rowClass = calcRowClass(c, status);
+
+    rowEl.classList.remove('row-done', 'row-missing-docs');
+    if (rowClass) rowEl.classList.add(rowClass);
+
+    var remTd = rowEl.querySelector('td[data-field="remainingQty"]');
+    if (remTd) {
+      var remainingVal = (Number(c.qty) || 0) - (Number(c.delivered) || 0);
+      remTd.textContent = String(remainingVal);
+      remTd.className = (remainingVal > 0 ? 'contracts-remaining pos' : 'contracts-remaining zero');
+    }
+
+    var stTd = rowEl.querySelector('td[data-field="statusText"]');
+    if (stTd) stTd.innerHTML = renderStatusBadge(status);
+  }
+
+  function toggleDocsSent(id, value, checkboxEl) {
+    var c = contractsCache.find(function (x) { return x.id === id; });
+    if (!c) return;
+
+    var desired = !!value;
+    var current = !!c.docsSent;
+    if (desired === current) return;
+
+    var payload = buildPayloadFromContract(c);
+    var rollbackPayload = Object.assign({}, payload);
+    payload.docsSent = desired;
+
+    if (checkboxEl) checkboxEl.disabled = true;
+
+    applyPayloadToContract(c, payload);
+    updateRowComputed(checkboxEl ? checkboxEl.closest('tr.data-row') : null, c);
+
+    google.script.run
+      .withSuccessHandler(function (r) {
+        if (!r || !r.success) {
+          applyPayloadToContract(c, rollbackPayload);
+          if (checkboxEl) {
+            checkboxEl.checked = rollbackPayload.docsSent;
+            checkboxEl.disabled = false;
+          }
+          updateRowComputed(checkboxEl ? checkboxEl.closest('tr.data-row') : null, c);
+          toast('Не удалось сохранить изменение');
+          return;
+        }
+
+        if (checkboxEl) checkboxEl.disabled = false;
+      })
+      .withFailureHandler(function () {
+        applyPayloadToContract(c, rollbackPayload);
+        if (checkboxEl) {
+          checkboxEl.checked = rollbackPayload.docsSent;
+          checkboxEl.disabled = false;
+        }
+        updateRowComputed(checkboxEl ? checkboxEl.closest('tr.data-row') : null, c);
+        toast('Не удалось сохранить изменение');
+      })
+      .appBackend({
+        module: 'contracts',
+        action: 'update',
+        payload: payload
+      });
+  }
+
+  function upsertCacheValue(arr, value) {
+    value = (value || '').toString().trim();
+    if (!value) return;
+    var low = value.toLowerCase();
+    var exists = (arr || []).some(function (x) { return (x || '').toString().trim().toLowerCase() === low; });
+    if (!exists) arr.push(value);
+  }
+
+  /* ===== Copy / Paste row ===== */
+
+  function copySelectedRows() {
+    toast('Копирование строк отключено. Редактирование только через форму.');
+  }
+
+  function pasteCopiedContract() {
+    toast('Вставка строк отключена. Используйте форму создания/редактирования.');
+    pasteInFlight = false;
+  }
+
+  function inferNextOrderAfter(afterId) {
+    if (!afterId) {
+      var max = 0;
+      contractsCache.forEach(function (c) { max = Math.max(max, Number(c.__order) || 0); });
+      return max + 1;
+    }
+    var idx = contractsCache.findIndex(function (c) { return c.id === afterId; });
+    if (idx === -1) return (contractsCache.length + 1);
+    return (Number(contractsCache[idx].__order) || (idx + 1)) + 1;
+  }
+
+  function insertIntoCache(contract, afterId) {
+    if (!contract) return;
+
+    if (!afterId) {
+      contractsCache.push(contract);
+      normalizeOrders();
+      return;
+    }
+
+    var idx = contractsCache.findIndex(function (c) { return c.id === afterId; });
+    if (idx === -1) {
+      contractsCache.push(contract);
+      normalizeOrders();
+      return;
+    }
+
+    contractsCache.splice(idx + 1, 0, contract);
+    normalizeOrders();
+  }
+
+  function normalizeOrders() {
+    // чтобы № оставался красивым
+    contractsCache.forEach(function (c, i) {
+      c.__order = i + 1;
+    });
+  }
+
+  /* ===== Paste floating button ===== */
+
+  function ensurePasteFloat() {
+    if (pasteBtnEl) return pasteBtnEl;
+    pasteBtnEl = document.createElement('button');
+    pasteBtnEl.className = 'contracts-paste-float';
+    pasteBtnEl.textContent = 'Вставить строку';
+    pasteBtnEl.onclick = function () {
+      pasteCopiedContract();
+    };
+    document.body.appendChild(pasteBtnEl);
+    return pasteBtnEl;
+  }
+
+  function showPasteFloat(x, y) {
+    if (!copyBuffer) return;
+    var btn = ensurePasteFloat();
+    btn.style.left = (x + 8) + 'px';
+    btn.style.top = (y + 8) + 'px';
+    btn.style.display = 'inline-flex';
+  }
+
+  function hidePasteFloat() {
+    if (pasteBtnEl) pasteBtnEl.style.display = 'none';
+  }
+
+  function bindPasteHotspot() {
+    var area = document.getElementById('dataArea');
+    if (!area || area.dataset.contractPasteBound) return;
+    area.dataset.contractPasteBound = '1';
+
+    // клик по пустому месту — снимаем выделение и скрываем меню/кнопки
+    area.addEventListener('mousedown', function (e) {
+      if (e.target.closest('#contractsTable')) return;
+      clearSelection();
+      hideContextMenu();
+      hidePasteFloat();
+    });
+
+    area.addEventListener('contextmenu', function (e) {
+      if (!copyBuffer) return;
+      if (e.target.closest('#contractsTable')) return;
+      e.preventDefault();
+      showPasteFloat(e.clientX, e.clientY);
+    });
+
+    // скрыть при скролле/клике вне
+    document.addEventListener('scroll', hidePasteFloat, true);
+    document.addEventListener('mousedown', function (e) {
+      if (pasteBtnEl && pasteBtnEl.contains(e.target)) return;
+      hidePasteFloat();
+    }, true);
+  }
+
+  /* ===== Undo (Ctrl+Z) ===== */
+
+  function bindGlobalShortcuts() {
+    if (document.body.dataset.contractsShortcutsBound) return;
+    document.body.dataset.contractsShortcutsBound = '1';
+
+    document.addEventListener('keydown', function (e) {
+      var isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+      var ctrl = isMac ? e.metaKey : e.ctrlKey;
+
+      if (!ctrl) return;
+
+      // если сейчас фокус в input/textarea — не перехватываем (кроме когда мы хотим именно строку)
+      var tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+      var inField = (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable));
+
+      // Ctrl+C: копировать строки
+      if (e.key.toLowerCase() === 'c') {
+        if (!inField && selectedIds.length) {
+          e.preventDefault();
+          copySelectedRows();
+          return;
+        }
+      }
+
+      // Ctrl+V: вставить строку
+      if (e.key.toLowerCase() === 'v') {
+        if (!inField && copyBuffer) {
+          e.preventDefault();
+          pasteCopiedContract();
+          return;
+        }
+      }
+
+      var key = e.key.toLowerCase();
+
+      // Ctrl+Z: undo последнего действия (ячейка/вставка/удаление)
+      if (key === 'z' && !e.shiftKey) {
+        if (!inField) {
+          e.preventDefault();
+          undoLast();
+          return;
+        }
+      }
+
+      // Ctrl+Shift+Z или Ctrl+Y: redo
+      if ((key === 'y') || (key === 'z' && e.shiftKey)) {
+        if (!inField) {
+          e.preventDefault();
+          redoLast();
+          return;
+        }
+      }
+    });
+  }
+
+  function undoLast() {
+    if (!undoStack.length) {
+      toast('Нечего отменять');
+      return;
+    }
+
+    commitActiveEditor(true);
+
+    var last = undoStack.pop();
+
+    if (last.kind === 'update') {
+      // вернуть предыдущее значение (делаем update на сервер)
+      var id = last.id;
+      var field = last.field;
+      var c = contractsCache.find(function (x) { return x.id === id; });
+      if (!c) return;
+
+      var payload = buildPayloadFromContract(c);
+
+      if (field === 'date' || field === 'deadline' || field === 'planDate' || field === 'dateFact') {
+        payload[field] = parseRuDateToIso(last.oldVal) || '';
+      } else if (field === 'qty' || field === 'planQty') {
+        payload[field] = Number(String(last.oldVal).replace(',', '.')) || 0;
+      } else {
+        payload[field] = last.oldVal || '';
+      }
+
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success) {
+            toast('Не удалось отменить изменение');
+            return;
+          }
+          applyPayloadToContract(c, payload);
+          renderTable();
+          pushRedo({ kind: 'update', id: id, field: field, oldVal: last.oldVal, newVal: last.newVal });
+          toast('Отменено');
+        })
+        .appBackend({ module: 'contracts', action: 'update', payload: payload });
+
+      return;
+    }
+
+    if (last.kind === 'create') {
+      // undo вставки: удалить созданный контракт
+      var createdId = last.id;
+      var contract = last.contract;
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success) {
+            toast('Не удалось отменить вставку');
+            return;
+          }
+          contractsCache = contractsCache.filter(function (x) { return x.id !== createdId; });
+          normalizeOrders();
+          renderTable();
+          if (contract) pushRedo({ kind: 'recreate', contract: contract, afterId: last.afterId });
+          toast('Вставка отменена');
+        })
+        .appBackend({ module: 'contracts', action: 'delete', payload: { id: createdId } });
+
+      return;
+    }
+
+    if (last.kind === 'delete') {
+      // undo удаления: создать заново (как есть)
+      var contract = last.contract;
+      if (!contract) return;
+
+      var payload = buildPayloadFromContract(contract);
+      payload.id = ''; // новый
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success || !r.data) {
+            toast('Не удалось вернуть удалённую строку');
+            return;
+          }
+          var restored = r.data;
+          restored.__order = inferNextOrderAfter('');
+          contractsCache.push(restored);
+          normalizeOrders();
+          renderTable();
+          pushRedo({ kind: 'delete', contract: restored });
+          toast('Удаление отменено');
+        })
+        .appBackend({ module: 'contracts', action: 'create', payload: payload });
+
+      return;
+    }
+  }
+
+  function redoLast() {
+    if (!redoStack.length) {
+      toast('Нечего повторять');
+      return;
+    }
+
+    commitActiveEditor(true);
+
+    var step = redoStack.pop();
+
+    if (step.kind === 'update') {
+      var cUpd = contractsCache.find(function (x) { return x.id === step.id; });
+      if (!cUpd) return;
+
+      var payloadUpd = buildPayloadFromContract(cUpd);
+      if (step.field === 'date' || step.field === 'deadline' || step.field === 'planDate' || step.field === 'dateFact') {
+        payloadUpd[step.field] = parseRuDateToIso(step.newVal) || '';
+      } else if (step.field === 'qty' || step.field === 'planQty') {
+        payloadUpd[step.field] = Number(String(step.newVal).replace(',', '.')) || 0;
+      } else {
+        payloadUpd[step.field] = step.newVal || '';
+      }
+
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success) {
+            toast('Не удалось повторить изменение');
+            return;
+          }
+          applyPayloadToContract(cUpd, payloadUpd);
+          renderTable();
+          pushUndo({ kind: 'update', id: step.id, field: step.field, oldVal: step.oldVal, newVal: step.newVal }, true);
+          toast('Изменение применено');
+        })
+        .appBackend({ module: 'contracts', action: 'update', payload: payloadUpd });
+
+      return;
+    }
+
+    if (step.kind === 'recreate') {
+      var payloadCreate = buildPayloadFromContract(step.contract || {});
+      payloadCreate.id = '';
+      if (step.afterId) payloadCreate.insertAfterId = step.afterId;
+
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success || !r.data) {
+            toast('Не удалось повторить вставку');
+            return;
+          }
+          var createdAgain = r.data;
+          createdAgain.__order = inferNextOrderAfter(step.afterId || '');
+          insertIntoCache(createdAgain, step.afterId || '');
+          normalizeOrders();
+          renderTable();
+          pushUndo({ kind: 'create', id: createdAgain.id, contract: createdAgain, afterId: step.afterId }, true);
+          toast('Строка возвращена');
+        })
+        .appBackend({ module: 'contracts', action: 'create', payload: payloadCreate });
+
+      return;
+    }
+
+    if (step.kind === 'delete') {
+      var delId = step.contract && step.contract.id;
+      if (!delId) return;
+
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.success) {
+            toast('Не удалось повторить удаление');
+            return;
+          }
+          contractsCache = contractsCache.filter(function (x) { return x.id !== delId; });
+          normalizeOrders();
+          renderTable();
+          pushUndo({ kind: 'delete', contract: step.contract }, true);
+          toast('Удалено снова');
+        })
+        .appBackend({ module: 'contracts', action: 'delete', payload: { id: delId } });
+
+      return;
+    }
+  }
+
+  /* ===== Extra scroll after last row ===== */
+
+  function adjustScrollSpacer() {
+    var area = document.getElementById('dataArea');
+    var spacer = document.getElementById('contractsScrollSpacer');
+    if (!area || !spacer) return;
+
+    var lastRow = area.querySelector('#contractsTable tbody tr.data-row:last-child');
+    var header = area.querySelector('#contractsTable thead tr');
+
+    var base = 420; // минимум свободной области для попапов
+    if (!lastRow) {
+      spacer.style.height = base + 'px';
+      return;
+    }
+
+    var areaHeight = area.clientHeight;
+    var rowHeight = lastRow.getBoundingClientRect().height || 0;
+    var headerHeight = header ? (header.getBoundingClientRect().height || 0) : 0;
+
+    var extra = Math.max(base, areaHeight - rowHeight - headerHeight + 140);
+    spacer.style.height = extra + 'px';
+  }
+
+  function bindResizeForSpacer() {
+    if (window.__contractsSpacerBound) return;
+    window.__contractsSpacerBound = true;
+    window.addEventListener('resize', adjustScrollSpacer);
+  }
+
+  /* ===== References ===== */
+
+  function ensureReferenceCaches(callback, options) {
+  options = options || {};
+  var force = !!options.forceServer;
+
+  // если уже загружали в этой сессии — не трогаем сервер
+  if (!force && refsLoaded && (orgCache && orgCache.length || supplierCache && supplierCache.length)) {
+    callback && callback();
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (res && res.success && res.data) {
+        orgCache = res.data.orgs || res.data.orgsS || res.data.orgsJ || [];
+        supplierCache = res.data.suppliers || [];
+      } else {
+        orgCache = [];
+        supplierCache = [];
+      }
+      refsLoaded = true;
+      callback && callback();
+    })
+    .withFailureHandler(function () {
+      orgCache = [];
+      supplierCache = [];
+      refsLoaded = true;
+      callback && callback();
+    })
+    .appBackend({
+      module: 'contracts',
+      action: 'refs',
+      payload: {}
+    });
+}
+
+
+  function preload() {
+    if (preloadPromise) return preloadPromise;
+    preloadPromise = new Promise(function (resolve) {
+      google.script.run
+        .withSuccessHandler(function (result) {
+          if (result && result.success) {
+            preloadedContracts = { data: (result.data || []).map(function (c, idx) {
+              c.__order = (c.rowNumber != null) ? Number(c.rowNumber) : (idx + 1);
+              return c;
+            }) };
+          }
+          preloadResolved = true;
+          markReady();
+          resolve();
+        })
+        .withFailureHandler(function () {
+          preloadResolved = true;
+          markReady();
+          resolve();
+        })
+        .appBackend({
+          module: 'contracts',
+          action: 'list',
+          payload: {}
+        });
+      ensureReferenceCaches();
+      ensureItemsCache();
+    });
+    return preloadPromise;
+  }
+
+  function ensureItemsCache(callback, options) {
+  options = options || {};
+  var force = !!options.forceServer;
+
+  if (!force && itemsCache && itemsCache.length) {
+    callback && callback();
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (res && res.success) itemsCache = res.data || [];
+      else itemsCache = [];
+      callback && callback();
+    })
+    .withFailureHandler(function () {
+      itemsCache = [];
+      callback && callback();
+    })
+    .appBackend({
+      module: 'warehouse',
+      action: 'listItems',
+      payload: {}
+    });
+}
+
+
+  /* ===== Create / Edit / Delete ===== */
+
+  function showContractLoading(message) {
+    var text = message || 'Загружаем форму...';
+    setDataAreaContent('<div class="panel-loading"><div class="spinner"></div><div>' + escapeHtml(text) + '</div></div>');
+  }
+
+  function create() {
+    var payload = {
+      id: '',
+      number: '',
+      date: todayIso(),
+      deadline: '',
+      supplier: '',
+      org: '',
+      item: '',
+      qty: '',
+      planQty: '',
+      planDate: '',
+      delivered: '',
+      dateFact: '',
+      items: [{
+        item: '',
+        qty: '',
+        planQty: '',
+        planDate: '',
+        dateFact: '',
+        delivered: ''
+      }],
+      docsSent: false,
+      forceDone: false
+    };
+    showContractLoading('Подготовка формы...');
+    requestAnimationFrame(function () {
+      showContractForm('create', payload);
+    });
+  }
+
+  function edit(id) {
+    if (!id) {
+      toast('Не найден ID контракта');
+      return;
+    }
+    showContractLoading('Загружаем данные контракта...');
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (!res || !res.success || !res.data) {
+          toast('Не удалось загрузить данные контракта');
+          return;
+        }
+        showContractForm('edit', res.data);
+      })
+      .appBackend({
+        module: 'contracts',
+        action: 'get',
+        payload: { id: id }
+      });
+  }
+
+  function remove(id) {
+    if (!id) {
+      toast('Не найден ID контракта');
+      return;
+    }
+    AppDialog.confirm(
+      'Удалить контракт?\nЭто действие необратимо.',
+      function () {
+        var removed = contractsCache.find(function (x) { return x.id === id; });
+
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (!r || !r.success) {
+              toast('Ошибка удаления');
+              return;
+          }
+          // undo deletion
+          if (removed) pushUndo({ kind: 'delete', contract: removed });
+
+          contractsCache = contractsCache.filter(function (x) { return x.id !== id; });
+          selectedIds = selectedIds.filter(function (x) { return x !== id; });
+          lastSelectedId = selectedIds[selectedIds.length - 1] || null;
+          normalizeOrders();
+          renderTable();
+          toast('Удалено');
+        })
+        .appBackend({
+            module: 'contracts',
+            action: 'delete',
+            payload: { id: id }
+          });
+      },
+      null,
+      'Удаление'
+    );
+  }
+
+  function removeSelected() {
+    if (!selectedIds.length) return;
+    if (selectedIds.length === 1) { remove(selectedIds[0]); return; }
+
+    var ids = selectedIds.slice();
+    AppDialog.confirm(
+      'Удалить выбранные строки (' + ids.length + ' шт.)?\nЭто действие необратимо.',
+      function () {
+        var removedContracts = ids.map(function (id) {
+          return contractsCache.find(function (x) { return x.id === id; });
+        }).filter(Boolean);
+
+        google.script.run
+          .withSuccessHandler(function (r) {
+            if (!r || !r.success) {
+              toast('Ошибка удаления');
+              return;
+            }
+
+            removedContracts.forEach(function (c) {
+              pushUndo({ kind: 'delete', contract: c });
+            });
+
+            contractsCache = contractsCache.filter(function (x) { return ids.indexOf(x.id) === -1; });
+            clearSelection();
+            normalizeOrders();
+            renderTable();
+            toast('Удалено');
+          })
+          .appBackend({
+            module: 'contracts',
+            action: 'deleteMany',
+            payload: { ids: ids }
+          });
+      },
+      null,
+      'Удаление'
+    );
+  }
+
+  /* ===== FORM (твоя форма) ===== */
+
+  function normalizeFormItems(c) {
+    var items = (c && Array.isArray(c.items)) ? c.items.slice() : [];
+    if (!items.length) {
+      items.push({
+        item: c ? (c.item || '') : '',
+        qty: c ? c.qty : '',
+        planQty: c ? c.planQty : '',
+        planDate: c ? c.planDate : '',
+        dateFact: c ? c.dateFact : '',
+        delivered: c ? c.delivered : ''
+      });
+    }
+    return items;
+  }
+
+  var itemRowUid = 0;
+
+  function buildItemRowHtml(item, idx, canRemove) {
+    var planId = 'ctPlanDate_' + (itemRowUid++);
+    var factId = 'ctFactDate_' + (itemRowUid++);
+    return (
+      '<div class="ct-item-row" data-index="' + idx + '">' +
+        '<div class="ct-field ct-field-icon">' +
+          '<label class="ct-label">Предмет поставки</label>' +
+          '<span class="ct-icon">📦</span>' +
+          '<div class="combo-wrapper">' +
+            '<input class="ct-input icon-left ct-item-input" type="text" value="' + escapeHtml(item.item || '') + '" placeholder="Начните ввод..." autocomplete="off">' +
+            '<div class="ct-dropdown-list ct-item-list"></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="ct-field">' +
+          '<label class="ct-label">Количество</label>' +
+          '<input class="ct-input ct-item-qty" type="number" value="' + escapeHtml(String(item.qty || 0)) + '" placeholder="0">' +
+        '</div>' +
+        '<div class="ct-field">' +
+          '<label class="ct-label">План, шт</label>' +
+          '<input class="ct-input ct-item-planqty" type="number" value="' + escapeHtml(String(item.planQty || 0)) + '" placeholder="0">' +
+        '</div>' +
+        '<div class="ct-field ct-field-icon">' +
+          '<label class="ct-label">План (дата)</label>' +
+          '<span class="ct-icon">📅</span>' +
+          '<input id="' + planId + '" class="ct-input icon-left ct-item-plandate" type="text" value="' + escapeHtml(formatDateRu(item.planDate)) + '" placeholder="дд.мм.гггг">' +
+        '</div>' +
+        '<div class="ct-field ct-field-icon">' +
+          '<label class="ct-label">Факт (дата)</label>' +
+          '<span class="ct-icon">🚚</span>' +
+          '<input id="' + factId + '" class="ct-input icon-left ct-item-factdate" type="text" value="' + escapeHtml(formatDateRu(item.dateFact)) + '" placeholder="дд.мм.гггг">' +
+        '</div>' +
+        '<div class="ct-field">' +
+          '<label class="ct-label">Факт, шт</label>' +
+          '<input class="ct-input ct-item-delivered" type="number" value="' + escapeHtml(String(item.delivered || 0)) + '" placeholder="0">' +
+        '</div>' +
+        '<button type="button" class="ct-item-remove" ' + (canRemove ? '' : 'disabled') + ' title="Удалить товар">🗑</button>' +
+      '</div>'
+    );
+  }
+
+  function showContractForm(mode, c) {
+    var title =
+      (mode === 'create')
+        ? 'Создание контракта'
+        : 'Редактирование контракта';
+
+    var formStatus = calcStatusFromHeader(c || {});
+    var statusText = statusToText(formStatus);
+    var statusClass = (formStatus === 'done') ? 'ct-badge-done' : (formStatus === 'missingDocs' ? 'ct-badge-missing' : 'ct-badge-progress');
+
+    var areaForm = document.getElementById('dataArea');
+    if (areaForm) areaForm.classList.add('contract-form-mode');
+    document.body.classList.add('contract-form-open');
+
+    var items = normalizeFormItems(c || {});
+    var itemsHtml = items.map(function (it, idx) {
+      return buildItemRowHtml(it, idx, items.length > 1);
+    }).join('');
+
+    var html = `
+      <div id="contractEditForm" class="contract-page">
+        <style>
+          #dataArea.contract-form-mode{padding:0!important;background:#f5f6f8;}
+          .contract-page{min-height:100vh;background:#f5f6f8;font-family:"Inter","Segoe UI",system-ui,sans-serif;color:#1f2533;display:flex;flex-direction:column;}
+          .ct-topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:12px 20px;position:sticky;top:0;z-index:40;background:#f5f6f8;box-shadow:0 6px 12px rgba(31,41,51,0.06);}
+          .contract-form-open .contracts-subbar{display:none !important;}
+          .ct-topbar-left{display:flex;align-items:center;gap:12px;}
+          .ct-back{width:34px;height:34px;border-radius:10px;border:1px solid #e2e6ee;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;color:#374151;box-shadow:0 6px 14px rgba(31,41,51,0.08);}
+          .ct-title-wrap{display:flex;flex-direction:column;gap:4px;}
+          .ct-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+          .ct-title{font-size:20px;font-weight:800;color:#111827;letter-spacing:-0.2px;}
+          .ct-subtitle{font-size:12px;font-weight:600;color:#8a93a5;}
+          .ct-status{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;font-weight:800;font-size:11px;}
+          .ct-badge-done{background:#e7f8ee;color:#159c55;}
+          .ct-badge-progress{background:#f5e6d4;color:#8a5a00;}
+          .ct-badge-missing{background:#ffe1e1;color:#c12f2f;}
+          .ct-topbar-actions{display:flex;align-items:center;gap:10px;}
+          .ct-save{display:inline-flex;align-items:center;gap:8px;border:none;border-radius:12px;padding:10px 16px;font-weight:800;font-size:13px;cursor:pointer;background:#4f46e5;color:#fff;box-shadow:0 10px 24px rgba(79,70,229,0.28);}
+          .ct-save .ico{font-size:14px;}
+          .ct-body{width:100%;padding:12px 20px 140px;display:flex;flex-direction:column;gap:12px;}
+          .ct-card{background:#fff;border:1px solid #e8ecf2;border-radius:14px;box-shadow:0 6px 14px rgba(31,41,51,0.06);overflow:visible;}
+          .ct-card-head{display:flex;gap:10px;padding:12px 16px;border-bottom:1px solid #edf1f6;}
+          .ct-card-icon{width:30px;height:30px;border-radius:9px;border:1px solid #edf1f6;background:#f8fafc;display:flex;align-items:center;justify-content:center;color:#4f46e5;font-size:14px;flex-shrink:0;}
+          .ct-card-title{font-size:13px;font-weight:800;color:#111827;}
+          .ct-card-sub{font-size:10px;color:#9aa3b5;font-weight:600;margin-top:2px;}
+          .ct-card-body{padding:12px 16px 14px;}
+          .ct-grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;}
+          .ct-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}
+          .ct-grid-item{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);gap:14px;}
+          .ct-field{display:flex;flex-direction:column;gap:6px;}
+          .ct-label{font-size:9px;font-weight:800;color:#9aa3b5;letter-spacing:.08em;text-transform:uppercase;}
+          .ct-input{height:34px;border-radius:9px;border:1px solid #d8dce7;padding:0 8px;font-size:12.5px;font-weight:400;color:#1f2533;background:#fff;transition:border-color .12s ease,box-shadow .12s ease;width:100%;}
+          .ct-input:focus{outline:none;border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,0.14);}
+          .ct-input.icon-left{padding-left:30px;}
+          .combo-wrapper{position:relative;}
+          .ct-dropdown-list{position:absolute;left:0;right:0;top:100%;margin-top:6px;background:#fff;border:1px solid #d8dce7;border-radius:14px;box-shadow:0 16px 32px rgba(31,41,51,0.16);max-height:240px;overflow:auto;font-size:12.5px;z-index:90000;display:none;padding:8px;}
+          .ct-dropdown-list .combo-item{padding:10px 12px;font-weight:700;color:#1f2533;cursor:pointer;display:flex;flex-direction:column;gap:2px;border-radius:10px;border:none;box-shadow:none;}
+          .ct-dropdown-list .combo-item:hover{background:#eef2ff;}
+          .ct-dropdown-list .combo-item.selected{background:#eef2ff;color:#2f44cc;}
+          .ct-icon{position:absolute;left:10px;top:33px;transform:translateY(-50%);font-size:14px;color:#9aa3b5;}
+          .ct-field-icon{position:relative;}
+          .ct-progress{border:1px solid #edf1f6;border-radius:12px;padding:10px 12px;background:#fafbfd;display:grid;gap:8px;}
+          .ct-progress-head{display:flex;align-items:center;justify-content:space-between;font-size:10px;font-weight:800;color:#9aa3b5;letter-spacing:.08em;text-transform:uppercase;}
+          .ct-progress-bar{height:8px;border-radius:999px;background:#e9edf4;overflow:hidden;}
+          .ct-progress-bar span{display:block;height:100%;background:#4f46e5;border-radius:999px;width:0%;}
+          .ct-progress-foot{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:center;}
+          .ct-help{font-size:10px;color:#9aa3b5;line-height:1.35;}
+          .ct-options{display:flex;flex-direction:column;gap:12px;}
+          .ct-option{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid #edf1f6;border-radius:10px;background:#fafbfd;}
+          .ct-option input{width:16px;height:16px;margin-top:2px;}
+          .ct-option-title{font-size:11px;font-weight:700;color:#1f2937;}
+          .ct-option-sub{font-size:10px;color:#9aa3b5;margin-top:2px;}
+          .ct-items{display:flex;flex-direction:column;gap:10px;}
+          .ct-item-row{display:grid;grid-template-columns:minmax(220px,2.2fr) minmax(120px,1fr) minmax(120px,1fr) minmax(160px,1fr) minmax(160px,1fr) minmax(120px,1fr) auto;gap:12px;align-items:end;padding:10px 12px;border:1px solid #edf1f6;border-radius:12px;background:#fafbfd;}
+          .ct-item-row .ct-label{font-size:9px;}
+          .ct-item-remove{align-self:center;height:32px;width:32px;border-radius:10px;border:1px solid #e2e6ee;background:#fff;cursor:pointer;box-shadow:0 4px 10px rgba(31,41,51,0.08);}
+          .ct-item-remove:disabled{opacity:.4;cursor:not-allowed;}
+          .ct-add-item{display:inline-flex;align-items:center;gap:8px;border:none;border-radius:12px;padding:10px 14px;font-weight:800;font-size:12px;cursor:pointer;background:#eef2ff;color:#2f44cc;box-shadow:0 6px 14px rgba(47,68,204,0.18);width:fit-content;}
+          .ct-add-item .ico{font-size:14px;}
+          @media (max-width: 1200px){.ct-item-row{grid-template-columns:repeat(2,minmax(0,1fr));}.ct-item-remove{justify-self:end;}}
+          @media (max-width: 980px){.ct-grid-3{grid-template-columns:repeat(auto-fit,minmax(200px,1fr));}.ct-grid-2{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}.ct-grid-item{grid-template-columns:1fr;}.ct-topbar{padding:10px 14px;}.ct-body{padding:10px 14px 120px;}}
+        </style>
+
+        <div class="ct-topbar">
+          <div class="ct-topbar-left">
+            <button class="ct-back" onclick="UIContracts.cancelEdit()" title="Назад">←</button>
+            <div class="ct-title-wrap">
+              <div class="ct-title-row">
+                <div class="ct-title">${title}</div>
+                <div class="ct-status ${statusClass}">${escapeHtml(statusText)}</div>
+              </div>
+              <div class="ct-subtitle">Заполните данные о поставке и условиях договора</div>
+            </div>
+          </div>
+          <div class="ct-topbar-actions">
+            <button class="ct-save" onclick="UIContracts.save('${mode}', '${escapeHtml(c.id || '')}')"><span class="ico">💾</span>Сохранить изменения</button>
+          </div>
+        </div>
+
+        <div class="ct-body">
+          <div class="ct-card">
+            <div class="ct-card-head">
+              <div class="ct-card-icon">📄</div>
+              <div>
+                <div class="ct-card-title">Основные данные</div>
+                <div class="ct-card-sub">Ключевые идентификаторы и сроки действия контракта</div>
+              </div>
+            </div>
+            <div class="ct-card-body">
+              <div class="ct-grid-3">
+                <div class="ct-field ct-field-icon">
+                  <label class="ct-label" for="ctNumber">Номер контракта</label>
+                  <span class="ct-icon">№</span>
+                  <input id="ctNumber" class="ct-input icon-left" type="text" value="${escapeHtml(c.number || '')}" placeholder="Номер контракта">
+                </div>
+                <div class="ct-field ct-field-icon">
+                  <label class="ct-label" for="ctDate">Дата контракта</label>
+                  <span class="ct-icon">📅</span>
+                  <input id="ctDate" class="ct-input icon-left" type="text" value="${formatDateRu(c.date || todayIso())}" placeholder="дд.мм.гггг">
+                </div>
+                <div class="ct-field ct-field-icon">
+                  <label class="ct-label" for="ctDeadline">Крайний срок поставки</label>
+                  <span class="ct-icon">⏰</span>
+                  <input id="ctDeadline" class="ct-input icon-left" type="text" value="${formatDateRu(c.deadline)}" placeholder="дд.мм.гггг">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ct-card">
+            <div class="ct-card-head">
+              <div class="ct-card-icon">🏛️</div>
+              <div>
+                <div class="ct-card-title">Участники</div>
+                <div class="ct-card-sub">Стороны, участвующие в исполнении контракта</div>
+              </div>
+            </div>
+            <div class="ct-card-body">
+              <div class="ct-grid-2">
+                <div class="ct-field ct-field-icon">
+                  <label class="ct-label" for="ctSupplier">Юр. лицо поставщика</label>
+                  <span class="ct-icon">🏢</span>
+                  <div class="combo-wrapper ct-supplier-combo">
+                    <input id="ctSupplier" class="ct-input icon-left" type="text" value="${escapeHtml(c.supplier || '')}" placeholder="Введите юр лицо" autocomplete="off">
+                    <div id="ctSupplierList" class="ct-dropdown-list"></div>
+                  </div>
+                </div>
+                <div class="ct-field ct-field-icon">
+                  <label class="ct-label" for="ctOrg">Организация (заказчик)</label>
+                  <span class="ct-icon">🏢</span>
+                  <div class="combo-wrapper ct-org-combo">
+                    <input id="ctOrg" class="ct-input icon-left" type="text" value="${escapeHtml(c.org || '')}" placeholder="Введите организацию" autocomplete="off">
+                    <div id="ctOrgList" class="ct-dropdown-list"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ct-card">
+            <div class="ct-card-head">
+              <div class="ct-card-icon">📦</div>
+              <div>
+                <div class="ct-card-title">Детали поставки</div>
+                <div class="ct-card-sub">Спецификация товаров и объем обязательств</div>
+              </div>
+            </div>
+            <div class="ct-card-body">
+              <div class="ct-items" id="ctItemsBody">
+                ${itemsHtml}
+              </div>
+              <button type="button" class="ct-add-item" onclick="UIContracts.addItemRow()"><span class="ico">＋</span>Добавить товар</button>
+              <input id="ctDelivered" type="hidden" value="${c.delivered || 0}">
+            </div>
+          </div>
+
+          <div class="ct-card">
+            <div class="ct-card-head">
+              <div class="ct-card-icon">✅</div>
+              <div>
+                <div class="ct-card-title">Статус выполнения</div>
+                <div class="ct-card-sub">Закрывающие документы и фактическая приемка</div>
+              </div>
+            </div>
+            <div class="ct-card-body">
+              <div class="ct-field">
+                <label class="ct-label">Дополнительные опции</label>
+                <div class="ct-options">
+                  <label class="ct-option">
+                    <input id="ctDocsSent" type="checkbox" ${c.docsSent ? 'checked' : ''}>
+                    <span>
+                      <div class="ct-option-title">Документы отправлены</div>
+                      <div class="ct-option-sub">Подтверждает отправку оригиналов в бухгалтерию</div>
+                    </span>
+                  </label>
+                  <label class="ct-option">
+                    <input id="ctForceDone" type="checkbox" ${c.forceDone ? 'checked' : ''}>
+                    <span>
+                      <div class="ct-option-title">Принудительно считать выполненным</div>
+                      <div class="ct-option-sub">Закрыть контракт без достижения плановых показателей</div>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    setDataAreaContent(html);
+
+    // attach calendar (только по клику в инпуте)
+    if (typeof attachDateInput === 'function') {
+      attachDateInput('ctDate');
+      attachDateInput('ctDeadline');
+    }
+
+    initSupplierComboForm();
+    initOrgComboForm();
+    bindItemRows();
+  }
+
+  function bindItemRows() {
+    var rows = document.querySelectorAll('.ct-item-row');
+    Array.prototype.forEach.call(rows, function (row) {
+      bindItemRow(row);
+    });
+  }
+
+  function bindItemRow(row) {
+    if (!row || row.dataset.bound) return;
+    row.dataset.bound = '1';
+
+    var input = row.querySelector('.ct-item-input');
+    var list  = row.querySelector('.ct-item-list');
+    var wrapper = input ? input.closest('.combo-wrapper') : null;
+    if (input && list && wrapper) {
+      function open() {
+        var q = (input.value || '').trim().toLowerCase();
+        var html = '';
+        var count = 0;
+        (itemsCache || []).forEach(function (it) {
+          if (!it || !it.name) return;
+          var text = (it.name + ' ' + (it.unit || '')).toLowerCase();
+          if (q && text.indexOf(q) === -1) return;
+          if (count >= 80) return;
+          var isSelected = (input.value || '').trim().toLowerCase() === String(it.name || '').trim().toLowerCase();
+          html += '<div class="combo-item' + (isSelected ? ' selected' : '') + '" data-name="' + escapeHtml(it.name) + '">' + escapeHtml(it.name) + '</div>';
+          count++;
+        });
+        if (!html) html = '<div class="combo-item">Ничего не найдено</div>';
+        list.innerHTML = html;
+        positionListInWrapper(list, wrapper);
+        list.style.display = 'block';
+        if (window.ensureOverlayVisible) window.ensureOverlayVisible(list, input);
+
+        Array.prototype.forEach.call(list.querySelectorAll('.combo-item[data-name]'), function (el) {
+          el.onclick = function () {
+            input.value = el.getAttribute('data-name') || '';
+            list.style.display = 'none';
+          };
+        });
+      }
+
+      input.onclick = open;
+      input.oninput = open;
+      input.onblur = function () { setTimeout(function () { list.style.display = 'none'; }, 120); };
+
+      if (!document.body.dataset.contractItemComboOutsideBound) {
+        document.body.dataset.contractItemComboOutsideBound = '1';
+        document.addEventListener('mousedown', function (e) {
+          if (!wrapper.contains(e.target) && !list.contains(e.target)) list.style.display = 'none';
+        });
+      }
+    }
+
+    if (typeof attachDateInput === 'function') {
+      var planInput = row.querySelector('.ct-item-plandate');
+      var factInput = row.querySelector('.ct-item-factdate');
+      if (planInput && planInput.id) attachDateInput(planInput.id);
+      if (factInput && factInput.id) attachDateInput(factInput.id);
+    }
+
+    var removeBtn = row.querySelector('.ct-item-remove');
+    if (removeBtn) {
+      removeBtn.onclick = function () { removeItemRow(row); };
+    }
+  }
+
+  function addItemRow() {
+    var body = document.getElementById('ctItemsBody');
+    if (!body) return;
+    var idx = body.querySelectorAll('.ct-item-row').length;
+    var html = buildItemRowHtml({ item: '', qty: 0, planQty: 0, planDate: '', dateFact: '', delivered: 0 }, idx, true);
+    var wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    var row = wrapper.firstChild;
+    body.appendChild(row);
+    updateItemRemoveButtons();
+    bindItemRow(row);
+  }
+
+  function removeItemRow(row) {
+    if (!row) return;
+    var body = document.getElementById('ctItemsBody');
+    if (!body) return;
+    body.removeChild(row);
+    updateItemRemoveButtons();
+  }
+
+  function updateItemRemoveButtons() {
+    var rows = document.querySelectorAll('.ct-item-row');
+    var allowRemove = rows.length > 1;
+    Array.prototype.forEach.call(rows, function (r) {
+      var btn = r.querySelector('.ct-item-remove');
+      if (btn) btn.disabled = !allowRemove;
+    });
+  }
+
+  function initOrgComboForm() {
+    var input = document.getElementById('ctOrg');
+    var list  = document.getElementById('ctOrgList');
+    var wrapper = input ? input.closest('.ct-org-combo') : null;
+    if (!input || !list || !wrapper) return;
+
+    function open() {
+      renderSuggestList(list, orgCache, input.value, function (val) {
+        input.value = val || '';
+        list.style.display = 'none';
+      }, input.value);
+      positionListInWrapper(list, wrapper);
+      list.style.display = 'block';
+      if (window.ensureOverlayVisible) window.ensureOverlayVisible(list, input);
+    }
+
+    input.onclick = open;
+    input.oninput = open;
+    input.onblur = function () { setTimeout(function () { list.style.display = 'none'; }, 120); };
+
+    if (!document.body.dataset.contractOrgComboOutsideBound) {
+      document.body.dataset.contractOrgComboOutsideBound = '1';
+      document.addEventListener('mousedown', function (e) {
+        if (!wrapper.contains(e.target) && !list.contains(e.target)) list.style.display = 'none';
+      });
+    }
+  }
+
+  function initSupplierComboForm() {
+    var input = document.getElementById('ctSupplier');
+    var list  = document.getElementById('ctSupplierList');
+    var wrapper = input ? input.closest('.ct-supplier-combo') : null;
+    if (!input || !list || !wrapper) return;
+
+    function open() {
+      renderSuggestList(list, supplierCache, input.value, function (val) {
+        input.value = val || '';
+        list.style.display = 'none';
+      }, input.value);
+      positionListInWrapper(list, wrapper);
+      list.style.display = 'block';
+      if (window.ensureOverlayVisible) window.ensureOverlayVisible(list, input);
+    }
+
+    input.onclick = open;
+    input.oninput = open;
+    input.onblur = function () { setTimeout(function () { list.style.display = 'none'; }, 120); };
+
+    if (!document.body.dataset.contractSupplierComboOutsideBound) {
+      document.body.dataset.contractSupplierComboOutsideBound = '1';
+      document.addEventListener('mousedown', function (e) {
+        if (!wrapper.contains(e.target) && !list.contains(e.target)) list.style.display = 'none';
+      });
+    }
+  }
+
+  /* ===== Save (без полного refresh страницы) ===== */
+
+  function val(id) {
+    var el = document.getElementById(id);
+    return el ? (el.value || '').trim() : '';
+  }
+
+  function readItemsFromForm() {
+    var rows = document.querySelectorAll('.ct-item-row');
+    var items = [];
+    Array.prototype.forEach.call(rows, function (row) {
+      var itemInput = row.querySelector('.ct-item-input');
+      var qtyInput = row.querySelector('.ct-item-qty');
+      var planQtyInput = row.querySelector('.ct-item-planqty');
+      var planDateInput = row.querySelector('.ct-item-plandate');
+      var factDateInput = row.querySelector('.ct-item-factdate');
+      var deliveredInput = row.querySelector('.ct-item-delivered');
+      var item = itemInput ? itemInput.value.trim() : '';
+      var qty = qtyInput ? qtyInput.value : '';
+      var planQty = planQtyInput ? planQtyInput.value : '';
+      var planDateRaw = planDateInput ? planDateInput.value.trim() : '';
+      var factDateRaw = factDateInput ? factDateInput.value.trim() : '';
+      var planDate = parseRuDateToIso(planDateRaw);
+      var dateFact = parseRuDateToIso(factDateRaw);
+      var delivered = deliveredInput ? deliveredInput.value : '';
+
+      items.push({
+        item: item,
+        qty: qty,
+        planQty: planQty,
+        planDateRaw: planDateRaw,
+        planDate: planDate,
+        factDateRaw: factDateRaw,
+        dateFact: dateFact,
+        delivered: delivered
+      });
+    });
+    return items;
+  }
+
+  function save(mode, id) {
+    var number      = val('ctNumber');
+    var dateIso     = parseRuDateToIso(val('ctDate'));
+    var ddlRaw      = val('ctDeadline');
+    var ddlIso      = parseRuDateToIso(ddlRaw);
+    var supplier    = val('ctSupplier');
+    var org         = val('ctOrg');
+    var delivered   = val('ctDelivered');
+    var docsSent    = document.getElementById('ctDocsSent').checked;
+    var forceDone   = document.getElementById('ctForceDone').checked;
+    var itemsRaw    = readItemsFromForm();
+
+    if (!number) { AppDialog.alert('Введите номер контракта.', 'Ошибка'); return; }
+    if (!dateIso) { AppDialog.alert('Введите корректную дату контракта.', 'Ошибка'); return; }
+    if (ddlRaw && !ddlIso) { AppDialog.alert('Введите корректный крайний срок (дд.мм.гггг).', 'Ошибка'); return; }
+
+    var items = [];
+    var hasItemName = false;
+    for (var i = 0; i < itemsRaw.length; i++) {
+      var r = itemsRaw[i];
+      if (r.item) hasItemName = true;
+      if (r.planDateRaw && !r.planDate) { AppDialog.alert('Введите корректную дату плана (дд.мм.гггг).', 'Ошибка'); return; }
+      if (r.factDateRaw && !r.dateFact) { AppDialog.alert('Введите корректную дату факта (дд.мм.гггг).', 'Ошибка'); return; }
+      var qtyVal = Number(r.qty) || 0;
+      var planQtyVal = Number(r.planQty) || 0;
+      var deliveredVal = Number(r.delivered) || 0;
+      var hasContent = r.item || qtyVal || planQtyVal || r.planDate || r.dateFact || deliveredVal;
+      if (!hasContent) continue;
+      items.push({
+        item: r.item,
+        qty: qtyVal,
+        planQty: planQtyVal,
+        planDate: r.planDate,
+        dateFact: r.dateFact,
+        delivered: deliveredVal
+      });
+    }
+
+    if (!hasItemName) { AppDialog.alert('Введите наименование товара.', 'Ошибка'); return; }
+
+    var afterIdHint = contractsCache.length ? contractsCache[contractsCache.length - 1].id : '';
+
+    var firstItem = items[0] || {};
+    var payload = {
+      id: id || '',
+      number: number,
+      date: dateIso,
+      deadline: ddlIso,
+      supplier: supplier,
+      org: org,
+      item: firstItem.item || '',
+      qty: Number(firstItem.qty) || 0,
+      planQty: Number(firstItem.planQty) || 0,
+      planDate: firstItem.planDate || '',
+      delivered: Number(firstItem.delivered) || Number(delivered) || 0,
+      dateFact: firstItem.dateFact || '',
+      docsSent: docsSent,
+      forceDone: forceDone,
+      items: items
+    };
+
+    var action = (mode === 'create') ? 'create' : 'update';
+
+    google.script.run
+      .withSuccessHandler(function (r) {
+        if (!r || !r.success) {
+          AppDialog.alert('Ошибка сохранения: ' + (r && r.error ? r.error : 'неизвестная ошибка'), 'Сохранение');
+          return;
+        }
+
+        if (mode === 'create' && r.data) {
+          // добавляем без refresh
+          var created = r.data;
+          contractsCache.push(created);
+          normalizeOrders();
+          pushUndo({ kind: 'create', id: created.id, contract: created, afterId: afterIdHint });
+          toast('Создано');
+          renderTable();
+          return;
+        }
+
+        if (mode === 'edit') {
+          // локально обновим и вернемся к таблице
+          var existing = contractsCache.find(function (x) { return x.id === payload.id; });
+          if (existing) applyPayloadToContract(existing, payload);
+          toast('Сохранено');
+          renderTable();
+          return;
+        }
+
+        renderTable();
+      })
+      .appBackend({
+        module: 'contracts',
+        action: action,
+        payload: payload
+      });
+  }
+
+  function cancelEdit() {
+    renderTable();
+  }
+
+  /* ===== Utils ===== */
+
+  function toast(msg) {
+    var el = document.getElementById('contractsToast');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.display = 'block';
+    clearTimeout(el.__t);
+    el.__t = setTimeout(function () {
+      el.style.display = 'none';
+    }, 2200);
+  }
+
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function formatDateRu(dateVal) {
+    if (!dateVal) return '';
+    if (dateVal instanceof Date) {
+      var y = dateVal.getFullYear();
+      var m = ('0' + (dateVal.getMonth() + 1)).slice(-2);
+      var d = ('0' + dateVal.getDate()).slice(-2);
+      return d + '.' + m + '.' + y;
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) {
+      var p = dateVal.split('-');
+      return p[2] + '.' + p[1] + '.' + p[0];
+    }
+    return String(dateVal);
+  }
+
+  function parseRuDateToIso(str) {
+    if (!str) return '';
+    str = str.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+    var m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(str);
+    if (m) return m[3] + '-' + m[2] + '-' + m[1];
+    var d = str.replace(/\D/g, '');
+    if (d.length === 8) return d.slice(4) + '-' + d.slice(2, 4) + '-' + d.slice(0, 2);
+    return '';
+  }
+
+  function todayIso() {
+    var d = new Date();
+    var y = d.getFullYear();
+    var m = ('0' + (d.getMonth() + 1)).slice(-2);
+    var dd = ('0' + d.getDate()).slice(-2);
+    return y + '-' + m + '-' + dd;
+  }
+
+  /* ===== Import from Drive ===== */
+
+  function ensureContractsProgress() {
+    if (contractsProgressEl) return contractsProgressEl;
+    var el = document.createElement('div');
+    el.className = 'contracts-import-progress';
+    el.innerHTML = '<div class="spinner"></div><div class="contracts-import-text">Идет проверка новых контрактов...</div>';
+    document.body.appendChild(el);
+    contractsProgressEl = el;
+    return el;
+  }
+
+  function showContractsProgress(text) {
+    var el = ensureContractsProgress();
+    var txt = el.querySelector('.contracts-import-text');
+    if (txt) txt.textContent = text || 'Идет проверка новых контрактов...';
+    el.style.display = 'flex';
+  }
+
+  function hideContractsProgress() {
+    if (contractsProgressEl) contractsProgressEl.style.display = 'none';
+  }
+
+  function buildImportMessage(res) {
+    if (!res) return 'Не удалось выполнить проверку.';
+    if (res.skipped) return 'Проверка уже выполняется. Попробуйте позже.';
+    if (res.message) return res.message;
+    var added = Array.isArray(res.added) ? res.added : [];
+    if (!added.length) return 'Новых контрактов нет!';
+    var titles = added.map(function (a) {
+      var t = (a && a.title) ? String(a.title) : 'контракт';
+      var norm = t.toLowerCase();
+      if (norm.indexOf('контракт') === 0 || norm.indexOf('договор') === 0) return t;
+      return 'контракт ' + t;
+    });
+    return 'Добавлены ' + titles.join(', ') + '.';
+  }
+
+  function runContractsImport() {
+    if (contractsImportInFlight) return;
+    contractsImportInFlight = true;
+    showContractsProgress('Идет проверка новых контрактов...');
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        contractsImportInFlight = false;
+        hideContractsProgress();
+
+        if (!res || !res.success) {
+          AppDialog.alert('Не удалось проверить новые контракты.', 'Проверка контрактов');
+          return;
+        }
+
+        var message = buildImportMessage(res.data || {});
+        AppDialog.alert(message, 'Проверка контрактов');
+        refresh(true);
+      })
+      .withFailureHandler(function (err) {
+        contractsImportInFlight = false;
+        hideContractsProgress();
+        AppDialog.alert('Ошибка: ' + (err || 'неизвестная ошибка'), 'Проверка контрактов');
+      })
+      .appBackend({ module: 'dashboard', action: 'processContracts', payload: {} });
+  }
+
+  /* ===== Public ===== */
+
+  return {
+    load: load,
+    refresh: refresh,
+    onResume: function () { if (contractsCache && contractsCache.length) renderTable(); },
+
+    create: create,
+    edit: edit,
+    remove: remove,
+    save: save,
+    cancelEdit: cancelEdit,
+    addItemRow: addItemRow,
+
+    sortBy: sortBy,
+    sortByDateField: sortByDateField,
+    openById: openById,
+
+    undoLast: undoLast,
+    redoLast: redoLast
+    ,
+    preload: preload,
+    runContractsImport: runContractsImport
+  };
+
+})();
+</script>

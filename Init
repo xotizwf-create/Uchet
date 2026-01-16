@@ -1,0 +1,82 @@
+/**
+ * Автоматически создаёт ВСЮ структуру ПП.
+ * Запускается вручную или автоматически при onOpen().
+ */
+function initMini1C() {
+  createContractsSheet();
+  createContractStagesSheet(); // Если используешь
+  createWarehouseSheets();
+  createPriceListSheet();
+  Logger.log("ПП: структура проверена / создана");
+}
+
+/** ===== РЕЕСТР КОНТРАКТОВ (обновлённый) ===== */
+function createContractsSheet() {
+  const sh = Core.ensureSheet(Core.config.sheets.contracts);
+
+  const HEADERS = [
+    'Контракт выполнен',
+    'Дата контракта',
+    'Крайний срок поставки',
+    'Юр.Лицо поставщика',
+    'Организация',
+    'Дата факт.поставки',
+    'Документы отправили',
+    'Номер контракта',
+    'Что поставляем',
+    'Количество',
+    'План, шт',
+    'Дата плановой поставки',
+    'Сколько поставлено',
+    'ID контракта'
+  ];
+
+  Core.ensureHeaders(sh, HEADERS);
+}
+
+/** ===== ЭТАПЫ КОНТРАКТОВ ===== */
+function createContractStagesSheet() {
+  const name = "Контракты_Этапы";
+  const HEADERS = ['ID этапа', 'ID контракта', 'Дата', 'Количество', 'Примечание'];
+
+  const sh = Core.ensureSheet(name);
+
+  const existing = sh.getRange(1, 1, 1, HEADERS.length).getValues()[0];
+  if (existing.some(c => !c)) {
+    sh.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+    Logger.log("Заголовки для '" + name + "' установлены.");
+  } else {
+    Logger.log("Заголовки для '" + name + "' уже существуют.");
+  }
+}
+
+/** ===== СКЛАД ===== */
+function createWarehouseSheets() {
+  const cfg = Core.config.sheets;
+
+  ensureSheetWithHeaders(cfg.stockItems, ['Наименование','Ед. изм.','ID','Активен']);
+  ensureSheetWithHeaders(cfg.stockIncome, ['Наименование','Номер счета','Дата прихода','Количество','Ед. изм.','ID']);
+  ensureSheetWithHeaders(cfg.stockExpenses, ['Организация','Дата','Товар','Количество','ID']);
+  ensureSheetWithHeaders(cfg.stockMoves,   ['Дата движения','Номер контракта/счета','Товар','Тип операции','Количество']);
+  ensureSheetWithHeaders(cfg.stockBalance, ['Дата','Наименование','Остаток']);
+}
+
+function ensureSheetWithHeaders(name, headers) {
+  const sh = Core.ensureSheet(name);
+  Core.ensureHeaders(sh, headers);
+}
+
+/** ===== ПРАЙС ===== */
+function createPriceListSheet() {
+  const sh = Core.ensureSheet(Core.config.sheets.price);
+
+  const HEADERS = ['Код','Наименование','Цена без НДС','Цена с НДС','Примечание'];
+
+  const row = sh.getRange(1, 1, 1, HEADERS.length).getValues()[0];
+  if (row.some(c => !c)) {
+    sh.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+    Logger.log("Заголовки для '" + Core.config.sheets.price + "' установлены.");
+  } else {
+    Logger.log("Заголовки для '" + Core.config.sheets.price + "' уже существуют.");
+  }
+}

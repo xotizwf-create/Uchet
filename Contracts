@@ -1,0 +1,706 @@
+// Contracts.gs (FULL FIXED)
+// - Не создаёт "пустые контракты" из-за справочников
+// - refs: организации из S2:S1000, поставщики из T2:T1000
+// - create: insertAfterId + защита от двойных/пустых строк
+
+var Contracts = (function () {
+  var SHEET_CONTRACTS = Core.config.sheets.contracts;
+
+  // A..N = контракт
+  var CONTRACT_WIDTH = 14;
+  var COL_ID = 14; // N
+
+  var COL_DATE_FACT = 6; // F
+  var COL_ITEM = 9; // I
+  var COL_QTY = 10; // J
+  var COL_PLAN_QTY = 11; // K
+  var COL_PLAN_DATE = 12; // L
+  var COL_DELIVERED = 13; // M (факт, шт)
+
+  var EXTRA_ITEM_START_COL = 21; // U
+  var EXTRA_ITEM_COLS = 30; // U..AX
+  var EXTRA_ITEM_FIELDS = 6; // item, qty, planQty, planDate, dateFact, delivered
+  var EXTRA_ITEM_SLOTS = Math.floor(EXTRA_ITEM_COLS / EXTRA_ITEM_FIELDS);
+
+  // refs ranges (orgs strictly from S2:S1000 per latest requirement)
+  var ORG_COL_PRIMARY = 19; // S
+  var SUPPLIER_COL = 20; // T
+
+  var DDL_START_ROW = 2;
+  var DDL_ROWS = 999; // 2..1000
+
+  function getSheet() {
+    return Core.ensureSheet(SHEET_CONTRACTS);
+  }
+
+  function handle(request) {
+    var p = request.payload || {};
+
+    switch (request.action) {
+      case 'list':
+        return { success: true, data: listContracts() };
+
+      case 'refs':
+        return { success: true, data: listReferences() };
+
+      case 'get':
+        return { success: true, data: getContractById(p.id) };
+
+      case 'create':
+        return { success: true, data: createContract(p) };
+
+      case 'createMany':
+        return { success: true, data: createMany(p) };
+
+      case 'update':
+        updateContract(p);
+        return { success: true, data: getContractById(p.id) };
+
+      case 'delete':
+        deleteContract(p.id);
+        return { success: true };
+
+      case 'deleteMany':
+        deleteMany(p.ids || []);
+        return { success: true };
+
+      default:
+        throw new Error('Unknown contracts action: ' + request.action);
+    }
+  }
+
+  /* ========= Dates ========= */
+
+  function toIsoDate(val) {
+    if (!val || val === 0 || val === '0') return '';
+    if (val instanceof Date) {
+      if (!isFinite(val.getTime ? val.getTime() : NaN) || val.getTime() === 0) return '';
+      var y = val.getFullYear();
+      var m = ('0' + (val.getMonth() + 1)).slice(-2);
+      var d = ('0' + val.getDate()).slice(-2);
+      return y + '-' + m + '-' + d;
+    }
+    if (typeof val === 'number' && val === 0) return '';
+    if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
+    var dd = new Date(val);
+    if (isNaN(dd)) return '';
+    return toIsoDate(dd);
+  }
+
+  function fromIsoToDate(val) {
+    if (!val) return '';
+    if (val instanceof Date) return val;
+    if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+      return new Date(val + 'T00:00:00');
+    }
+    var d = new Date(val);
+    return isNaN(d) ? '' : d;
+  }
+
+  function s(v) {
+    return (v == null) ? '' : String(v).trim();
+  }
+
+  function parseHyperlink_(val) {
+    var res = { text: '', url: '' };
+    if (!val) return res;
+
+    var str = String(val);
+    var m = str.match(/^=HYPERLINK\("([^\"]*(?:""[^\"]*)*)";"([^\"]*(?:""[^\"]*)*)"/i);
+    if (m && m[1]) {
+      res.url = m[1].replace(/""/g, '"');
+      res.text = (m[2] || '').replace(/""/g, '"');
+      return res;
+    }
+
+    var urlMatch = str.match(/https?:\/\/[^\s]+/i);
+    return { text: str, url: urlMatch ? urlMatch[0] : '' };
+  }
+
+  function hasLetters(str) {
+    return /[A-Za-zА-Яа-яЁё]/.test(str || '');
+  }
+
+  function toNum(val) {
+    if (val == null || val === '') return 0;
+    if (typeof val === 'number') return isFinite(val) ? val : 0;
+    var t = String(val).replace(',', '.').trim();
+    if (!/^\-?\d+(\.\d+)?$/.test(t)) return 0;
+    var n = Number(t);
+    return isFinite(n) ? n : 0;
+  }
+
+  function buildHyperlink_(text, url) {
+    var t = (text == null) ? '' : String(text);
+    var u = (url == null) ? '' : String(url);
+    if (!u) return t;
+    var safeUrl = u.replace(/"/g, '""');
+    var safeText = t.replace(/"/g, '""');
+    return '=HYPERLINK("' + safeUrl + '";"' + safeText + '")';
+  }
+
+  function isMeaningfulContractRow(row, extraRow) {
+    // фильтр "призрачных" строк: строка контрактная только если есть реальные поля
+    if (!row || !row.length) return false;
+
+    var forceDone = !!row[0];
+    var date      = toIsoDate(row[1]);
+    var deadline  = toIsoDate(row[2]);
+    var supplier  = s(row[3]);
+    var org       = s(row[4]);
+    var dateFact  = toIsoDate(row[COL_DATE_FACT - 1]);
+    var docsSent  = !!row[6];
+    var number    = s(row[7]);
+    var item      = s(row[COL_ITEM - 1]);
+    var delivered = toNum(row[COL_DELIVERED - 1]);
+    var qty       = toNum(row[COL_QTY - 1]);
+    var planQty   = toNum(row[COL_PLAN_QTY - 1]);
+    var planDate  = toIsoDate(row[COL_PLAN_DATE - 1]);
+    var hasExtraItems = hasExtraItems_(extraRow || []);
+
+    return (
+      forceDone || docsSent ||
+      !!date || !!deadline || !!dateFact || !!planDate ||
+      !!number || !!item || !!org || !!supplier ||
+      qty !== 0 || planQty !== 0 || delivered !== 0 ||
+      hasExtraItems
+    );
+  }
+
+  function normalizeItemsPayload_(p) {
+    var items = (p && Array.isArray(p.items)) ? p.items.slice() : [];
+    if (!items.length && p) {
+      items.push({
+        item: p.item || '',
+        qty: p.qty,
+        planQty: p.planQty,
+        planDate: p.planDate,
+        dateFact: p.dateFact,
+        delivered: p.delivered
+      });
+    }
+    return items.filter(function (it) {
+      if (!it) return false;
+      var item = s(it.item);
+      var qty = toNum(it.qty);
+      var planQty = toNum(it.planQty);
+      var planDate = toIsoDate(it.planDate);
+      var dateFact = toIsoDate(it.dateFact);
+      var delivered = toNum(it.delivered);
+      return !!item || qty !== 0 || planQty !== 0 || !!planDate || !!dateFact || delivered !== 0;
+    });
+  }
+
+  function collectItems_(row, extraRow) {
+    var items = [];
+    var mainItem = {
+      item: s(row[COL_ITEM - 1]),
+      qty: toNum(row[COL_QTY - 1]),
+      planQty: toNum(row[COL_PLAN_QTY - 1]),
+      planDate: toIsoDate(row[COL_PLAN_DATE - 1]),
+      dateFact: toIsoDate(row[COL_DATE_FACT - 1]),
+      delivered: toNum(row[COL_DELIVERED - 1])
+    };
+    if (mainItem.item || mainItem.qty || mainItem.planQty || mainItem.planDate || mainItem.dateFact || mainItem.delivered) {
+      items.push(mainItem);
+    }
+
+    var extra = extraRow || [];
+    for (var i = 0; i < EXTRA_ITEM_SLOTS; i++) {
+      var offset = i * EXTRA_ITEM_FIELDS;
+      var it = {
+        item: s(extra[offset]),
+        qty: toNum(extra[offset + 1]),
+        planQty: toNum(extra[offset + 2]),
+        planDate: toIsoDate(extra[offset + 3]),
+        dateFact: toIsoDate(extra[offset + 4]),
+        delivered: toNum(extra[offset + 5])
+      };
+      if (it.item || it.qty || it.planQty || it.planDate || it.dateFact || it.delivered) {
+        items.push(it);
+      }
+    }
+
+    return items;
+  }
+
+  function hasExtraItems_(extraRow) {
+    var extra = extraRow || [];
+    for (var i = 0; i < EXTRA_ITEM_SLOTS; i++) {
+      var offset = i * EXTRA_ITEM_FIELDS;
+      var item = s(extra[offset]);
+      var qty = toNum(extra[offset + 1]);
+      var planQty = toNum(extra[offset + 2]);
+      var planDate = toIsoDate(extra[offset + 3]);
+      var dateFact = toIsoDate(extra[offset + 4]);
+      var delivered = toNum(extra[offset + 5]);
+      if (item || qty !== 0 || planQty !== 0 || planDate || dateFact || delivered !== 0) return true;
+    }
+    return false;
+  }
+
+  function buildExtraItemsRow_(items) {
+    var row = new Array(EXTRA_ITEM_COLS);
+    for (var i = 0; i < row.length; i++) row[i] = '';
+
+    var extras = (items || []).slice(1, EXTRA_ITEM_SLOTS + 1);
+    extras.forEach(function (it, idx) {
+      var offset = idx * EXTRA_ITEM_FIELDS;
+      row[offset] = it.item || '';
+      row[offset + 1] = Number(it.qty) || 0;
+      row[offset + 2] = Number(it.planQty) || 0;
+      row[offset + 3] = fromIsoToDate(it.planDate);
+      row[offset + 4] = fromIsoToDate(it.dateFact);
+      row[offset + 5] = Number(it.delivered) || 0;
+    });
+
+    return row;
+  }
+
+  function applyDateFormats_(sheet, startRow, numRows) {
+    if (!sheet || !startRow || !numRows) return;
+    var dateCols = [2, 3, COL_DATE_FACT, COL_PLAN_DATE];
+    dateCols.forEach(function (col) {
+      try { sheet.getRange(startRow, col, numRows, 1).setNumberFormat('dd.MM.yyyy'); } catch (e) {}
+    });
+
+    for (var i = 0; i < EXTRA_ITEM_SLOTS; i++) {
+      var planCol = EXTRA_ITEM_START_COL + (i * EXTRA_ITEM_FIELDS) + 3;
+      var factCol = EXTRA_ITEM_START_COL + (i * EXTRA_ITEM_FIELDS) + 4;
+      try { sheet.getRange(startRow, planCol, numRows, 1).setNumberFormat('dd.MM.yyyy'); } catch (e) {}
+      try { sheet.getRange(startRow, factCol, numRows, 1).setNumberFormat('dd.MM.yyyy'); } catch (e) {}
+    }
+  }
+
+  function getLastMeaningfulRowIndex(sheet) {
+    var values = Core.readSheetValues(sheet, CONTRACT_WIDTH);
+    var extraValues = [];
+    try {
+      if (values.length > 1) {
+        extraValues = sheet.getRange(1, EXTRA_ITEM_START_COL, values.length, EXTRA_ITEM_COLS).getValues();
+      }
+    } catch (e) {
+      extraValues = [];
+    }
+    var last = 1; // header row
+    for (var i = 1; i < values.length; i++) {
+      var extraRow = (extraValues[i] || []);
+      if (isMeaningfulContractRow(values[i], extraRow)) {
+        last = i + 1;
+      }
+    }
+    return last;
+  }
+
+  /* ========= list ========= */
+
+  function listContracts() {
+    var sheet = getSheet();
+    var values = Core.readSheetValues(sheet, CONTRACT_WIDTH);
+    if (values.length <= 1) return [];
+
+    var res = [];
+    var body = values.slice(1);
+    var updated = false;
+    var extraValues = [];
+    try {
+      extraValues = sheet.getRange(2, EXTRA_ITEM_START_COL, Math.max(body.length, 1), EXTRA_ITEM_COLS).getValues();
+    } catch (e) {
+      extraValues = [];
+    }
+
+    // hyperlink column (H) rich text to keep URLs after reload
+    var linkRich = [];
+    try {
+      linkRich = sheet.getRange(2, 8, Math.max(body.length, 1), 1).getRichTextValues();
+    } catch (e) {
+      linkRich = [];
+    }
+
+    for (var i = 0; i < body.length; i++) {
+      var row = body[i];
+      var extraRow = extraValues[i] || [];
+
+      if (!isMeaningfulContractRow(row, extraRow)) continue;
+
+      var id = row[COL_ID - 1];
+      if (!id) {
+        id = Utilities.getUuid();
+        row[COL_ID - 1] = id;
+        updated = true;
+      }
+
+      var rich = (linkRich[i] && linkRich[i][0]) ? linkRich[i][0] : null;
+      var linkFromRich = rich && rich.getLinkUrl ? rich.getLinkUrl() : '';
+      var linkMeta = parseHyperlink_(row[7]);
+      if (linkFromRich && !linkMeta.url) linkMeta.url = linkFromRich;
+
+      var items = collectItems_(row, extraRow);
+      var firstItem = items.length ? items[0] : {};
+
+      res.push({
+        id:           id,
+        rowNumber:    i + 1,
+        forceDone:    !!row[0],
+        date:         toIsoDate(row[1]),
+        deadline:     toIsoDate(row[2]),
+        supplier:     row[3] || '',
+        org:          row[4] || '',
+        dateFact:     firstItem.dateFact || toIsoDate(row[COL_DATE_FACT - 1]),
+        docsSent:     !!row[6],
+        number:       linkMeta.text || row[7] || '',
+        linkUrl:      linkMeta.url || '',
+        item:         firstItem.item || row[COL_ITEM - 1] || '',
+        qty:          (firstItem.qty != null) ? toNum(firstItem.qty) : toNum(row[COL_QTY - 1]),
+        planQty:      (firstItem.planQty != null) ? toNum(firstItem.planQty) : toNum(row[COL_PLAN_QTY - 1]),
+        planDate:     firstItem.planDate || toIsoDate(row[COL_PLAN_DATE - 1]),
+        delivered:    (firstItem.delivered != null) ? toNum(firstItem.delivered) : toNum(row[COL_DELIVERED - 1]),
+        items:        items
+      });
+    }
+
+    if (updated) {
+      sheet.getRange(2, 1, body.length, CONTRACT_WIDTH).setValues(body);
+    }
+
+    return res;
+  }
+
+  /* ========= get ========= */
+
+  function findRowById(id) {
+    if (!id) return null;
+    var sheet = getSheet();
+    var values = Core.readSheetValues(sheet, CONTRACT_WIDTH);
+    for (var i = 1; i < values.length; i++) {
+      if (values[i][COL_ID - 1] === id) {
+        return { sheet: sheet, rowIndex: i + 1, row: values[i] };
+      }
+    }
+    return null;
+  }
+
+  function getContractById(id) {
+    var found = findRowById(id);
+    if (!found) return null;
+    var row = found.row;
+    var sheet = found.sheet;
+    var extraRow = [];
+    try {
+      extraRow = sheet.getRange(found.rowIndex, EXTRA_ITEM_START_COL, 1, EXTRA_ITEM_COLS).getValues()[0] || [];
+    } catch (e) {
+      extraRow = [];
+    }
+
+    var rich = null;
+    try {
+      rich = sheet.getRange(found.rowIndex, 8).getRichTextValue();
+    } catch (e) {}
+
+    var linkMeta = parseHyperlink_(row[7]);
+    if (rich && rich.getLinkUrl && rich.getLinkUrl()) {
+      if (!linkMeta.url) linkMeta.url = rich.getLinkUrl();
+      if (!linkMeta.text) linkMeta.text = linkMeta.text || (rich.getText ? rich.getText() : '');
+    }
+
+    var items = collectItems_(row, extraRow);
+    var firstItem = items.length ? items[0] : {};
+
+    return {
+      id:           row[COL_ID - 1],
+      rowNumber:    found.rowIndex - 1,
+      forceDone:    !!row[0],
+      date:         toIsoDate(row[1]),
+      deadline:     toIsoDate(row[2]),
+      supplier:     row[3] || '',
+      org:          row[4] || '',
+      dateFact:     firstItem.dateFact || toIsoDate(row[COL_DATE_FACT - 1]),
+      docsSent:     !!row[6],
+      number:       linkMeta.text || row[7] || '',
+      linkUrl:      linkMeta.url || '',
+      item:         firstItem.item || row[COL_ITEM - 1] || '',
+      qty:          (firstItem.qty != null) ? toNum(firstItem.qty) : toNum(row[COL_QTY - 1]),
+      planQty:      (firstItem.planQty != null) ? toNum(firstItem.planQty) : toNum(row[COL_PLAN_QTY - 1]),
+      planDate:     firstItem.planDate || toIsoDate(row[COL_PLAN_DATE - 1]),
+      delivered:    (firstItem.delivered != null) ? toNum(firstItem.delivered) : toNum(row[COL_DELIVERED - 1]),
+      items:        items
+    };
+  }
+
+  /* ========= create/update/delete ========= */
+
+  function createContract(p) {
+    var sheet = getSheet();
+    var id = Utilities.getUuid();
+    var items = normalizeItemsPayload_(p);
+    var mainItem = items.length ? items[0] : {};
+
+    var values = [
+      !!p.forceDone,
+      fromIsoToDate(p.date),
+      fromIsoToDate(p.deadline),
+      p.supplier || '',
+      p.org || '',
+      fromIsoToDate(mainItem.dateFact || p.dateFact),
+      !!p.docsSent,
+      buildHyperlink_(p.number || '', p.linkUrl || ''),
+      mainItem.item || p.item || '',
+      Number(mainItem.qty) || Number(p.qty) || 0,
+      Number(mainItem.planQty) || Number(p.planQty) || 0,
+      fromIsoToDate(mainItem.planDate || p.planDate),
+      Number(mainItem.delivered) || Number(p.delivered) || 0,
+      id
+    ];
+
+    var extraValues = buildExtraItemsRow_(items);
+    var insertedRow = null;
+
+    if (p && p.insertAfterId) {
+      var after = findRowById(p.insertAfterId);
+      if (after) {
+        sheet.insertRowAfter(after.rowIndex);
+        try {
+          insertedRow = after.rowIndex + 1;
+          sheet.getRange(insertedRow, 1, 1, values.length).setValues([values]);
+        } catch (err) {
+          try { sheet.deleteRow(after.rowIndex + 1); } catch (e) {}
+          throw err;
+        }
+      } else {
+        var lastRow = getLastMeaningfulRowIndex(sheet);
+        sheet.insertRowAfter(lastRow);
+        insertedRow = lastRow + 1;
+        sheet.getRange(insertedRow, 1, 1, values.length).setValues([values]);
+      }
+    } else {
+      var lastRowDefault = getLastMeaningfulRowIndex(sheet);
+      sheet.insertRowAfter(lastRowDefault);
+      insertedRow = lastRowDefault + 1;
+      sheet.getRange(insertedRow, 1, 1, values.length).setValues([values]);
+    }
+
+    if (insertedRow && extraValues.length) {
+      sheet.getRange(insertedRow, EXTRA_ITEM_START_COL, 1, EXTRA_ITEM_COLS).setValues([extraValues]);
+    }
+    if (insertedRow) applyDateFormats_(sheet, insertedRow, 1);
+
+    ensureRegistryValue(sheet, ORG_COL_PRIMARY, p.org);
+    ensureRegistryValue(sheet, SUPPLIER_COL, p.supplier);
+
+    return getContractById(id);
+  }
+
+  function createMany(p) {
+    var items = (p && p.items) ? p.items : [];
+    if (!items.length) return [];
+
+    var sheet = getSheet();
+    var afterId = p.afterId || '';
+
+    var after = afterId ? findRowById(afterId) : null;
+    var insertAt = after ? after.rowIndex : getLastMeaningfulRowIndex(sheet);
+    if (insertAt < 1) insertAt = 1; // header
+
+    var rows = items.map(function (it) {
+      var id = Utilities.getUuid();
+      var normalized = normalizeItemsPayload_({ items: it ? [it] : [] });
+      var mainItem = normalized.length ? normalized[0] : {};
+      var values = [
+        !!it.forceDone,
+        fromIsoToDate(it.date),
+        fromIsoToDate(it.deadline),
+        it.supplier || '',
+        it.org || '',
+        fromIsoToDate(mainItem.dateFact || it.dateFact),
+        !!it.docsSent,
+        it.number || '',
+        mainItem.item || it.item || '',
+        Number(mainItem.qty) || Number(it.qty) || 0,
+        Number(mainItem.planQty) || Number(it.planQty) || 0,
+        fromIsoToDate(mainItem.planDate || it.planDate),
+        Number(mainItem.delivered) || Number(it.delivered) || 0,
+        id
+      ];
+      return { id: id, values: values, payload: it };
+    });
+
+    // вставка блока строк
+    sheet.insertRowsAfter(insertAt, rows.length);
+    var range = sheet.getRange(insertAt + 1, 1, rows.length, CONTRACT_WIDTH);
+    range.setValues(rows.map(function (r) { return r.values; }));
+    applyDateFormats_(sheet, insertAt + 1, rows.length);
+
+    // справочники одним проходом
+    var orgs = {};
+    var suppliers = {};
+    rows.forEach(function (r) {
+      var org = s(r.payload.org);
+      var sup = s(r.payload.supplier);
+      if (org) orgs[org.toLowerCase()] = org;
+      if (sup) suppliers[sup.toLowerCase()] = sup;
+    });
+    Object.keys(orgs).forEach(function (k) { ensureRegistryValue(sheet, ORG_COL_PRIMARY, orgs[k]); });
+    Object.keys(suppliers).forEach(function (k) { ensureRegistryValue(sheet, SUPPLIER_COL, suppliers[k]); });
+
+    var res = [];
+    var rowIdx = insertAt + 1;
+    rows.forEach(function (r) {
+      res.push({
+        id: r.id,
+        rowNumber: rowIdx - 1,
+        forceDone: !!r.payload.forceDone,
+        date: toIsoDate(r.payload.date),
+        deadline: toIsoDate(r.payload.deadline),
+        supplier: r.payload.supplier || '',
+        org: r.payload.org || '',
+        dateFact: toIsoDate(r.payload.dateFact),
+        docsSent: !!r.payload.docsSent,
+        number: r.payload.number || '',
+        item: r.payload.item || '',
+        qty: Number(r.payload.qty) || 0,
+        planQty: Number(r.payload.planQty) || 0,
+        planDate: toIsoDate(r.payload.planDate),
+        delivered: Number(r.payload.delivered) || 0,
+        items: r.payload.items || []
+      });
+      rowIdx++;
+    });
+
+    return res;
+  }
+
+  function updateContract(p) {
+    if (!p || !p.id) throw new Error('id is required for update');
+
+    var found = findRowById(p.id);
+    if (!found) throw new Error('Contract with id ' + p.id + ' not found');
+
+    var sheet = found.sheet;
+    var items = normalizeItemsPayload_(p);
+    var mainItem = items.length ? items[0] : {};
+
+    var values = [
+      !!p.forceDone,
+      fromIsoToDate(p.date),
+      fromIsoToDate(p.deadline),
+      p.supplier || '',
+      p.org || '',
+      fromIsoToDate(mainItem.dateFact || p.dateFact),
+      !!p.docsSent,
+      p.number || '',
+      mainItem.item || p.item || '',
+      Number(mainItem.qty) || Number(p.qty) || 0,
+      Number(mainItem.planQty) || Number(p.planQty) || 0,
+      fromIsoToDate(mainItem.planDate || p.planDate),
+      Number(mainItem.delivered) || Number(p.delivered) || 0,
+      p.id
+    ];
+
+    sheet.getRange(found.rowIndex, 1, 1, values.length).setValues([values]);
+    sheet.getRange(found.rowIndex, EXTRA_ITEM_START_COL, 1, EXTRA_ITEM_COLS).setValues([buildExtraItemsRow_(items)]);
+    applyDateFormats_(sheet, found.rowIndex, 1);
+
+    ensureRegistryValue(sheet, ORG_COL_PRIMARY, p.org);
+    ensureRegistryValue(sheet, SUPPLIER_COL, p.supplier);
+  }
+
+  function deleteContract(id) {
+    if (!id) throw new Error('id is required for delete');
+
+    var found = findRowById(id);
+    if (!found) throw new Error('Contract with id ' + id + ' not found');
+
+    found.sheet.deleteRow(found.rowIndex);
+  }
+
+  function deleteMany(ids) {
+    if (!ids || !ids.length) return;
+    var sheet = getSheet();
+    var values = Core.readSheetValues(sheet, CONTRACT_WIDTH);
+    if (values.length <= 1) return;
+
+    var rows = [];
+    for (var i = 1; i < values.length; i++) {
+      var id = values[i][COL_ID - 1];
+      if (ids.indexOf(id) !== -1) {
+        rows.push(i + 1); // sheet rows are 1-based, include header offset
+      }
+    }
+
+    rows.sort(function (a, b) { return b - a; });
+    rows.forEach(function (r) {
+      sheet.deleteRow(r);
+    });
+  }
+
+  /* ========= refs ========= */
+
+  function listReferences() {
+    var sheet = getSheet();
+
+    var sVals = sheet.getRange(DDL_START_ROW, ORG_COL_PRIMARY, DDL_ROWS, 1).getValues(); // S2:S1000
+
+    var orgs = uniqueStringsFiltered(sVals, true);
+
+    var supVals = sheet.getRange(DDL_START_ROW, SUPPLIER_COL, DDL_ROWS, 1).getValues();
+    var suppliers = uniqueStringsFiltered(supVals, false);
+
+    return {
+      orgs: orgs,
+      orgsS: orgs,
+      suppliers: suppliers
+    };
+  }
+
+  function ensureRegistryValue(sheet, colIndex, value) {
+    value = s(value);
+    if (!value) return;
+
+    // супер-важно: не пишем в A..N (1..14), чтобы не ломать реестр
+    if (colIndex <= CONTRACT_WIDTH) return;
+
+    var range = sheet.getRange(DDL_START_ROW, colIndex, DDL_ROWS, 1);
+    var values = range.getValues();
+    var lower = value.toLowerCase();
+
+    var exists = values.some(function (row) {
+      var v = s(row[0]);
+      return v && v.toLowerCase() === lower;
+    });
+    if (exists) return;
+
+    for (var i = 0; i < values.length; i++) {
+      var cur = s(values[i][0]);
+      if (!cur) {
+        range.getCell(i + 1, 1).setValue(value);
+        return;
+      }
+    }
+  }
+
+  function uniqueStringsFiltered(values, orgMode) {
+    var seen = {};
+    var out = [];
+    values.forEach(function (row) {
+      var v = s(row[0]);
+      if (!v) return;
+
+      if (orgMode) {
+        // отсечь чистые числа (qty)
+        if (/^\-?\d+([.,]\d+)?$/.test(v)) return;
+        if (!hasLetters(v)) return;
+      }
+
+      var key = v.toLowerCase();
+      if (seen[key]) return;
+      seen[key] = true;
+      out.push(v);
+    });
+    return out;
+  }
+
+  return {
+    handle: handle
+  };
+
+})();

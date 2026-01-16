@@ -1,0 +1,729 @@
+// Commercials.gs
+var Commercials = (function () {
+  var SHEET_NAME = 'Шаблон коммерческих';
+  var SHEET_URL = 'https://docs.google.com/spreadsheets/d/1haczLHZ_p8NpZ9z-hIt0NvHrGxIDSMnJJyHiyaPbeTY/edit?gid=139825104#gid=139825104';
+  var ROOT_FOLDER_ID = '1_os2gY30zoQL-Y7we2ituvyP8WX7VDun';
+  var MAIN_HEADERS = ['№', 'Наименование', 'Ед.изм', 'Кол-во', 'Цена'];
+
+  var TEMPLATE_IDS = {
+    'КП Авангард': '10EFjRSuKvB5r4e9UhKtwnhi20xGzKICcZnpX7DmcYyY',
+    'КП Грин': '1FlfJYFhO9RlNvPJF5z1xJGh8WWQM26uSLnbWFZVuC4g',
+    'КП Интеко': '1Rn_0L4Mkdc5IuRwFMMTcPwBoxQfhGQ0_xlINVzCXqnM',
+    'КП Столяров М.А.': '13PlY9SOQNW1cA_TcJO_iCZP8cTHJ5Dv15ZWi_YUhfKQ',
+    'КП Столярова': '1Oo4wen2uGLx8Ct05KhAztjqpQNnpScJmaO-4POPWNus',
+    'КП фарма': '1KHHyP57E8iI82v_gxKmfSksBp6x8lcm8fTJVXlwj7QE',
+    'КП Выбор': '19OZ7UUrulXYsoX0ry7Xif9AQm4EFchWpm7YfIamwN2g'
+  };
+
+  function handle(request) {
+    var p = request.payload || {};
+    switch (request.action) {
+      case 'load':
+        return { success: true, data: loadData() };
+
+      case 'saveMain':
+        saveMain(p.mainRows || [], p.rebuild !== false);
+        return { success: true, data: loadData() };
+
+      case 'saveParams':
+        // ВАЖНО: rebuild приходит с фронта (для шаблонов/организации rebuild=false)
+        saveParams(p.params || {}, p.templates || {}, p.organization || '', p.rebuild !== false);
+        return { success: true, data: loadData() };
+
+      case 'saveKpTables':
+        saveKpTables(p.tables || []);
+        return { success: true, data: loadData() };
+
+      case 'clearMain':
+        clearMain();
+        return { success: true, data: loadData() };
+
+      case 'rebuildKp':
+        createKPs();
+        return { success: true, data: loadData() };
+
+      case 'createPdfs':
+        var bundle = createPdfsFromTemplates();
+        return { success: true, data: bundle };
+
+      default:
+        throw new Error('Unknown commercials action: ' + request.action);
+    }
+  }
+
+  function getSheet() {
+    var sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_NAME);
+    if (!sheet) sheet = SpreadsheetApp.getActive().insertSheet(SHEET_NAME);
+    ensureStructure(sheet);
+    return sheet;
+  }
+
+  function loadData() {
+    var sheet = getSheet();
+
+    var mainRange = sheet.getRange(2, 2, 85, 5).getValues();
+    var headers = mainRange.shift();
+    var mainRows = mainRange.map(function (r, idx) {
+      return { row: idx + 3, values: r };
+    });
+
+    var paramsRaw = sheet.getRange('J3:J6').getValues();
+    var params = { j3: paramsRaw[0][0], j4: paramsRaw[1][0], j5: paramsRaw[2][0], j6: paramsRaw[3][0] };
+
+    var templates = sheet.getRange('L2:N2').getValues()[0].map(normalizeTemplateName);
+
+    // ✅ Организация в I1
+    var organization = '';
+    try {
+      organization = sheet.getRange('I1').getDisplayValue();
+    } catch (e) {
+      organization = '';
+    }
+
+    var organizationOptions = getOrganizations(sheet);
+    var kpTables = extractKpTables(sheet);
+
+    return {
+      headers: headers,
+      mainRows: mainRows,
+      params: params,
+      templates: { kp1: templates[0] || '', kp2: templates[1] || '', kp3: templates[2] || '' },
+      templateOptions: Object.keys(TEMPLATE_IDS),
+      kpTables: kpTables,
+      organization: organization,
+      organizationOptions: organizationOptions,
+      folderUrl: 'https://drive.google.com/drive/folders/' + ROOT_FOLDER_ID,
+      sheetUrl: SHEET_URL,
+      downloadHint: 'Файлы сохраняются в структурированную папку с датой и организацией.'
+    };
+  }
+
+  // Список организаций хранится в колонке Q (Q1:Q1000)
+  function getOrganizations(sheet) {
+    var range = sheet.getRange('Q1:Q1000').getValues();
+    var seen = {};
+    var list = [];
+    range.forEach(function (row) {
+      var name = row[0];
+      if (!name) return;
+      var text = name.toString().trim();
+      if (!text || seen[text]) return;
+      seen[text] = true;
+      list.push(text);
+    });
+    return list;
+  }
+
+  // Логируем организацию в Q, чтобы выпадашка росла со временем
+  function logOrganization(orgName) {
+    var sheet = getSheet();
+    var normalized = (orgName || '').toString().trim();
+    if (!normalized) return;
+
+    var names = sheet.getRange('Q1:Q1000').getValues().map(function (r) { return r[0]; });
+    var exists = names.some(function (n) { return n && n.toString().trim() === normalized; });
+    if (exists) return;
+
+    for (var i = 0; i < names.length; i++) {
+      if (!names[i]) {
+        // Q = 17
+        sheet.getRange(i + 1, 17).setValue(normalized);
+        return;
+      }
+    }
+  }
+
+  function saveMain(rows, rebuild) {
+    var sheet = getSheet();
+    var totalRows = 84;
+    var values = [];
+    for (var i = 0; i < totalRows; i++) {
+      var rowVals = (rows && rows[i] && rows[i].values) ? rows[i].values : [];
+      values.push([
+        rowVals[1] || '',
+        rowVals[2] || '',
+        rowVals[3] || '',
+        rowVals[4] || ''
+      ]);
+    }
+    sheet.getRange(3, 3, values.length, 4).setValues(values);
+    if (rebuild) {
+      try {
+        createKPs();
+      } catch (e) {
+        Core.error(e);
+      }
+    }
+  }
+
+  function saveParams(params, templates, organization, rebuild) {
+    var sheet = getSheet();
+
+    var vals = [params.j3 || '', params.j4 || '', params.j5 || '', params.j6 || ''];
+    sheet.getRange('J3:J6').setValues(vals.map(function (v) { return [v]; }));
+
+    var tplArr = [
+      normalizeTemplateName(templates.kp1),
+      normalizeTemplateName(templates.kp2),
+      normalizeTemplateName(templates.kp3)
+    ];
+    sheet.getRange('L2:N2').setValues([tplArr]);
+
+    // ✅ Организация пишется в I1
+    if (typeof organization !== 'undefined') {
+      sheet.getRange('I1').setValue(organization || '');
+    }
+
+    if (rebuild !== false) {
+      try {
+        createKPs();
+      } catch (e) {
+        Core.error(e);
+      }
+    }
+  }
+
+  function saveKpTables(tables) {
+    var sheet = getSheet();
+    tables.forEach(function (tbl) {
+      if (!tbl || !tbl.startRow || !tbl.values) return;
+      var height = tbl.values.length;
+      var width = tbl.values[0] ? tbl.values[0].length : 0;
+      if (!height || !width) return;
+      sheet.getRange(tbl.startRow, 11, height, width).setValues(tbl.values);
+    });
+  }
+
+  function clearMain() {
+    var sheet = getSheet();
+    var empty = [];
+    for (var i = 0; i < 84; i++) empty.push(['', '', '', '']);
+    sheet.getRange(3, 3, empty.length, 4).setValues(empty);
+    sheet.getRange('K10:P1000').clear().setBorder(false, false, false, false, false, false);
+  }
+
+  function ensureStructure(sheet) {
+    // Заголовки основной таблицы
+    var headerRange = sheet.getRange(2, 2, 1, MAIN_HEADERS.length);
+    var currentHeaders = headerRange.getValues()[0];
+    var needHeaders = currentHeaders.some(function (c, idx) {
+      return !c || c.toString().trim() === '' || c !== MAIN_HEADERS[idx];
+    });
+    if (needHeaders) headerRange.setValues([MAIN_HEADERS]);
+
+    // Нумерация строк
+    var numberingRange = sheet.getRange(3, 2, 84, 1);
+    var numberingValues = numberingRange.getValues();
+    var fillNumbers = numberingValues.some(function (r) { return !r[0]; });
+    if (fillNumbers) {
+      var numbers = [];
+      for (var i = 0; i < 84; i++) numbers.push([i + 1]);
+      numberingRange.setValues(numbers);
+    }
+
+    // Шаблоны КП по умолчанию
+    var tplCell = sheet.getRange('L2:N2');
+    var tplVals = tplCell.getValues()[0];
+    if (tplVals.every(function (c) { return !c; })) {
+      var keys = Object.keys(TEMPLATE_IDS);
+      tplCell.setValues([[keys[0] || '', keys[1] || '', keys[2] || '']]);
+    }
+  }
+
+  // ---------- вспомогательные ----------
+  function parseNumber(value) {
+    if (typeof value === 'number') return value;
+    if (!value) return 0;
+    return parseFloat(value.toString().replace(/,/g, '.').replace(/\s/g, '')) || 0;
+  }
+
+  function normalizeTemplateName(value) {
+    return value == null ? '' : value.toString().trim();
+  }
+
+  function hasAnyCompleteRow(sheet) {
+    return sheet.getRange('B3:F85').getValues().some(function (r) {
+      return r.slice(0, 5).every(function (c) { return c && c.toString().trim() !== ''; }) &&
+        parseFloat(r[3]) > 0 && parseFloat(r[4]) > 0;
+    });
+  }
+
+  function createKPs() {
+    var sheet = getSheet();
+    if (!hasAnyCompleteRow(sheet)) {
+      sheet.getRange('K10:P1000').clear().setBorder(false, false, false, false, false, false);
+      return;
+    }
+
+    sheet.getRange('K10:P1000').clear().setBorder(false, false, false, false, false, false);
+
+    var source = sheet.getRange('B2:F86').getValues();
+      var params = sheet.getRange('I2:J6').getValues();
+      var jVals = params.slice(1).map(function (r) { return parseNumber(r[1]); });
+      var j3 = jVals[0], j4 = jVals[1], j5 = jVals[2], j6 = jVals[3];
+
+      var data = source.slice(1, 85)
+        .filter(function (r) { return r[0] && r[1] && r[2] && parseNumber(r[3]) > 0 && parseNumber(r[4]) > 0; })
+        .map(function (r) {
+          return [r[0], r[1], r[2], parseNumber(r[3]), parseNumber(r[4]), Math.round(parseNumber(r[3]) * parseNumber(r[4]) * 100) / 100];
+        });
+
+      if (data.length === 0) return;
+
+    var header = source[0].concat(['Сумма']);
+    var row = 10;
+
+    var res1 = createTable(row, data, true, header, j6, sheet);
+    row = res1.nextRow + 2;
+
+    var data2 = data.map(function (r) { return r.slice(); });
+    var data3 = data.map(function (r) { return r.slice(); });
+
+    if (j5 > 0) {
+      adjustTableData(data2, j5 / calculateTotal(data2));
+      var target3 = 3 * j5 - res1.totalSum - calculateTotal(data2);
+      if (target3 > 0) adjustTableData(data3, target3 / calculateTotal(data3));
+    } else {
+      if (j3 > 0) adjustTableData(data2, 1 + j3 / 100);
+      if (j4 > 0) adjustTableData(data3, 1 + j4 / 100);
+    }
+
+    createTable(row, data2, false, header, j6, sheet);
+    row += data.length + 4;
+    createTable(row, data3, false, header, j6, sheet);
+  }
+
+  function calculateTotal(data) {
+    return data.reduce(function (s, r) { return s + (r[5] || 0); }, 0);
+  }
+
+  function adjustTableData(data, multiplier) {
+    data.forEach(function (r) {
+      r[4] = Math.round(r[4] * multiplier * 100) / 100;
+      r[5] = Math.round(r[3] * r[4] * 100) / 100;
+    });
+  }
+
+  function createTable(startRow, data, showNDS, header, j6, sheet) {
+    var startCol = 11;
+    var h = data.length + 2;
+    var table = [header].concat(data, [["", "Итого", "", "", "", ""]]);
+    var r = sheet.getRange(startRow, startCol, h, 6);
+
+    r.setValues(table)
+      .setFontFamily('Times New Roman')
+      .setFontSize(14)
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle')
+      .setBorder(true, true, true, true, true, true, 'black', SpreadsheetApp.BorderStyle.SOLID);
+
+    sheet.getRange(startRow + 1, startCol + 4, data.length, 2).setNumberFormat('#,##0.00');
+
+    var totalRow = startRow + data.length + 1;
+    sheet.getRange(totalRow, startCol + 1, 1, 4).merge().setValue('Итого');
+    sheet.getRange(totalRow, startCol + 5)
+      .setFormula('=SUM(P' + (startRow + 1) + ':P' + (startRow + data.length) + ')')
+      .setNumberFormat('#,##0.00');
+
+    sheet.setColumnWidth(startCol + 1, 200);
+
+    var next = totalRow + 1;
+    if (showNDS && j6 > 0) {
+      var total = sheet.getRange(totalRow, startCol + 5).getValue();
+      var nds = (total * j6) / (100 + j6);
+      var formatted = formatRubles(nds);
+      var text = 'НДС ' + j6 + '% - ' + formatted.formatted + ' (' + formatted.words + ') руб. ' + formatted.kopecks + ' коп.';
+      sheet.getRange(next, startCol, 1, 6).merge()
+        .setValue(text)
+        .setFontFamily('Times New Roman')
+        .setFontSize(14)
+        .setHorizontalAlignment('center')
+        .setVerticalAlignment('middle');
+      next++;
+    }
+
+    return { nextRow: next, totalSum: sheet.getRange(totalRow, startCol + 5).getValue() };
+  }
+
+  function formatRubles(amount) {
+    var formatted = amount.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    var parts = formatted.split(',');
+    var rubles = parts[0];
+    var kopecks = parts[1];
+    var rublesNum = parseInt(rubles.replace(/\s/g, ''), 10) || 0;
+    var words = numberToWords(rublesNum);
+
+    var lastDigit = rublesNum % 10;
+    var lastTwo = rublesNum % 100;
+    var rubleWord;
+    if (lastTwo >= 11 && lastTwo <= 19) rubleWord = 'рублей';
+    else if (lastDigit === 1) rubleWord = 'рубль';
+    else if (lastDigit >= 2 && lastDigit <= 4) rubleWord = 'рубля';
+    else rubleWord = 'рублей';
+
+    return { formatted: formatted, words: words + ' ' + rubleWord, kopecks: kopecks };
+  }
+
+  function numberToWords(num) {
+    var units = ['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять'];
+    var teens = ['десять', 'одиннадцать', 'двенадцать', 'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать', 'восемнадцать', 'девятнадцать'];
+    var tens = ['', '', 'двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят', 'семьдесят', 'восемьдесят', 'девяносто'];
+    var hundreds = ['', 'сто', 'двести', 'триста', 'четыреста', 'пятьсот', 'шестьсот', 'семьсот', 'восемьсот', 'девятьсот'];
+
+    if (num === 0) return 'ноль';
+    var result = '';
+
+    if (num >= 1000) {
+      var thousands = Math.floor(num / 1000);
+      if (thousands === 1) result += 'одна тысяча ';
+      else if (thousands === 2) result += 'две тысячи ';
+      else if (thousands >= 3 && thousands <= 4) result += numberToWords(thousands) + ' тысячи ';
+      else result += numberToWords(thousands) + ' тысяч ';
+      num %= 1000;
+    }
+
+    var hundred = Math.floor(num / 100);
+    if (hundred > 0) {
+      result += hundreds[hundred] + ' ';
+      num %= 100;
+    }
+
+    if (num >= 10 && num <= 19) {
+      result += teens[num - 10] + ' ';
+    } else {
+      var ten = Math.floor(num / 10);
+      if (ten > 0) result += tens[ten] + ' ';
+      var unit = num % 10;
+      if (unit > 0) result += units[unit] + ' ';
+    }
+    return result.trim();
+  }
+
+  function buildNdsTextForDoc(percent, totalDisplay) {
+    if (!percent || !totalDisplay) return null;
+    var totalNum = parseNumber(totalDisplay);
+    if (!totalNum) return null;
+
+    var nds = (totalNum * percent) / (100 + percent);
+    var formatted = nds.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    var parts = formatted.split(',');
+    var rubles = parts[0];
+    var kopecks = parts[1];
+    var rublesNum = parseInt(rubles.replace(/\s/g, ''), 10) || 0;
+    var rublesWords = numberToWords(rublesNum);
+
+    return 'НДС ' + percent + '% - ' + formatted + ' (' + rublesWords + ') руб. ' + kopecks + ' коп.';
+  }
+
+  function applyNdsTextToDoc(body, ndsText) {
+    if (!ndsText) return;
+    var rangeEl = body.findText('НДС');
+    if (!rangeEl) return;
+
+    var el = rangeEl.getElement();
+    while (el && el.getType() !== DocumentApp.ElementType.PARAGRAPH &&
+      el.getType() !== DocumentApp.ElementType.TABLE_CELL && el.getParent()) {
+      el = el.getParent();
+    }
+    if (!el) return;
+
+    var paragraph;
+    if (el.getType() === DocumentApp.ElementType.TABLE_CELL) {
+      var cell = el.asTableCell();
+      paragraph = (cell.getNumChildren() === 0) ? cell.appendParagraph('') : cell.getChild(0).asParagraph();
+    } else {
+      paragraph = el.asParagraph();
+    }
+
+    paragraph.setText(ndsText);
+    var attrs = {
+      [DocumentApp.Attribute.FONT_FAMILY]: 'Times New Roman',
+      [DocumentApp.Attribute.FONT_SIZE]: 12,
+      [DocumentApp.Attribute.BOLD]: false,
+      [DocumentApp.Attribute.FOREGROUND_COLOR]: '#000000'
+    };
+    try {
+      paragraph.setAttributes(attrs);
+      paragraph.setBold(false);
+      var text = paragraph.editAsText();
+      if (text) {
+        text.setBold(false);
+        text.setAttributes(0, text.getText().length - 1, attrs);
+      }
+      var parent = paragraph.getParent();
+      if (parent && parent.setAttributes) parent.setAttributes(attrs);
+    } catch (e) {}
+  }
+
+  function getFolderBaseNameFromPositions(data) {
+    if (!data || data.length === 0) return 'КП';
+    if (data.length >= 4) return 'Набор';
+    var fw = function (v) { return v.toString().trim().split(/\s+/).slice(0, 2).join(' '); };
+    var n1 = fw(data[0][1]);
+    if (data.length === 1) return n1 || 'КП';
+    var n2 = fw(data[1][1]);
+    return n2 ? (n1 + ', ' + n2) : (n1 || 'КП');
+  }
+
+  function getOrCreateTargetFolder(base, orgFolderName) {
+    var root = DriveApp.getFolderById(ROOT_FOLDER_ID);
+    var now = new Date();
+    var year = String(now.getFullYear());
+    var month = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'][now.getMonth()];
+    var day = Utilities.formatDate(now, Session.getScriptTimeZone(), 'dd.MM');
+
+    var yf = getOrCreateChildFolder(root, year);
+    var mf = getOrCreateChildFolder(yf, month);
+    var df = getOrCreateChildFolder(mf, day);
+
+    var orgFolder = getOrCreateChildFolder(df, orgFolderName);
+    return getOrCreateVersionedFolder(orgFolder, base);
+  }
+
+  function getOrCreateChildFolder(parent, name) {
+    var it = parent.getFoldersByName(name);
+    return it.hasNext() ? it.next() : parent.createFolder(name);
+  }
+
+  function getOrCreateVersionedFolder(parent, base) {
+    var it = parent.getFolders();
+    var exist = false, max = 1;
+
+    while (it.hasNext()) {
+      var n = it.next().getName();
+      if (n === base) exist = true;
+      else if (n.indexOf(base + '-') === 0) {
+        var num = parseInt(n.substring(base.length + 1), 10);
+        if (!isNaN(num)) max = Math.max(max, num);
+      }
+    }
+
+    if (!exist && max === 1) return parent.createFolder(base);
+    return parent.createFolder(base + '-' + (max + 1));
+  }
+
+  function createPdfsFromTemplates() {
+    var sh = getSheet();
+
+    var source = sh.getRange('B2:F86').getValues();
+    var params = sh.getRange('I2:J6').getValues();
+    var jVals = params.slice(1).map(function (r) { return parseNumber(r[1]); });
+    var j3 = jVals[0], j4 = jVals[1], j5 = jVals[2], j6 = jVals[3];
+
+    if (![j3, j4, j5].some(function (v) { return v > 0; })) {
+      return { message: 'Не заданы параметры КП (J3:J5). PDF не созданы.' };
+    }
+
+    var data = source.slice(1, 85)
+      .filter(function (r) { return r[0] && r[1] && r[2] && parseNumber(r[3]) > 0 && parseNumber(r[4]) > 0; })
+      .map(function (r) {
+        return [r[0], r[1], r[2], parseNumber(r[3]), parseNumber(r[4]), Math.round(parseNumber(r[3]) * parseNumber(r[4]) * 100) / 100];
+      });
+
+    if (data.length === 0) {
+      return { message: 'В основной таблице нет заполненных позиций. PDF не созданы.' };
+    }
+
+    var filledRowsCount = data.length;
+    var folderBaseName = getFolderBaseNameFromPositions(data);
+
+    // ✅ Организация берётся из I1 (как ты просил)
+    var orgName = sh.getRange('I1').getDisplayValue().toString().trim();
+    var orgFolderName = orgName ? orgName : ('Организация не указана - ' + folderBaseName);
+
+    var folder = getOrCreateTargetFolder(folderBaseName, orgFolderName);
+
+    // ✅ В список организаций пишем только реальную организацию, без суффиксов
+    if (orgName) logOrganization(orgName);
+
+    var startCol = 11;
+    var height = filledRowsCount + 2;
+
+    var startRow1 = 10;
+    var rangeKP1 = sh.getRange(startRow1, startCol, height, 6);
+
+    var showNDS = j6 > 0;
+    var totalRow1 = startRow1 + filledRowsCount + 1;
+    var startRow2 = totalRow1 + (showNDS ? 4 : 3);
+    var rangeKP2 = sh.getRange(startRow2, startCol, height, 6);
+
+    var startRow3 = startRow2 + filledRowsCount + 4;
+    var rangeKP3 = sh.getRange(startRow3, startCol, height, 6);
+
+    var templateNames = sh.getRange('L2:N2').getValues()[0].map(normalizeTemplateName);
+    var kpItems = [
+      { index: 1, templateName: templateNames[0], range: rangeKP1 },
+      { index: 2, templateName: templateNames[1], range: rangeKP2 },
+      { index: 3, templateName: templateNames[2], range: rangeKP3 }
+    ];
+
+    var createdFiles = [];
+    kpItems.forEach(function (item) {
+      if (!item.templateName) return;
+      var templateId = TEMPLATE_IDS[item.templateName];
+      if (!templateId) return;
+
+      var displayValues = item.range.getDisplayValues();
+      var totalDisplay = displayValues[displayValues.length - 1][5];
+      var dataRowsDisplay = displayValues.slice(1, displayValues.length - 1);
+
+      var ndsText = null;
+      if (item.index === 1 && j6 > 0) ndsText = buildNdsTextForDoc(j6, totalDisplay);
+
+      var fileName = 'КП' + item.index;
+      var pdfFile = createPdfFromTemplate(templateId, dataRowsDisplay, totalDisplay, folder, fileName, ndsText);
+      if (pdfFile) createdFiles.push(pdfFile);
+    });
+
+    if (!createdFiles.length) {
+      return { message: 'PDF не были созданы. Проверьте выбор шаблонов в L2:N2.' };
+    }
+
+    var blobs = createdFiles.map(function (file) {
+      var blob = file.getBlob();
+      blob.setName(file.getName());
+      return blob;
+    });
+
+    var zipName = folderBaseName + '.zip';
+    var zipBlob = Utilities.zip(blobs, zipName);
+    var zipFile = folder.createFile(zipBlob);
+
+    return {
+      message: 'Файлы созданы: ' + createdFiles.length,
+      folderUrl: folder.getUrl(),
+      downloadUrl: 'https://drive.google.com/uc?export=download&id=' + zipFile.getId(),
+      zipName: zipName
+    };
+  }
+
+  function createPdfFromTemplate(templateId, dataRows, totalText, destFolder, fileName, ndsText) {
+    try {
+      var copy = DriveApp.getFileById(templateId).makeCopy(fileName, destFolder);
+      var doc = DocumentApp.openById(copy.getId());
+      var body = doc.getBody();
+
+      var tables = body.getTables();
+      if (!tables || !tables.length) {
+        doc.saveAndClose();
+        return null;
+      }
+
+      var expectedCols = (dataRows && dataRows.length > 0) ? dataRows[0].length : 6;
+      var table = null;
+      for (var i = 0; i < tables.length; i++) {
+        var t = tables[i];
+        if (t.getNumRows() >= 2 && t.getRow(0).getNumCells() === expectedCols) {
+          table = t;
+          break;
+        }
+      }
+      if (!table) table = tables[0];
+
+      var rowCount = table.getNumRows();
+      var headerRowIndex = 0;
+      var footerRowIndex = rowCount - 1;
+      var firstDataRowIndex = 1;
+
+      var colCount = table.getRow(headerRowIndex).getNumCells();
+      var templateRow = table.getRow(firstDataRowIndex).copy();
+
+      var existingDataRows = footerRowIndex - firstDataRowIndex;
+      while (existingDataRows < dataRows.length) {
+        table.insertTableRow(footerRowIndex, templateRow.copy());
+        existingDataRows++;
+        footerRowIndex++;
+        rowCount++;
+      }
+
+      for (var r = 0; r < dataRows.length; r++) {
+        var rowVals = dataRows[r];
+        var row = table.getRow(firstDataRowIndex + r);
+        for (var c = 0; c < colCount; c++) {
+          row.getCell(c).setText(rowVals[c] == null ? '' : String(rowVals[c]));
+        }
+      }
+
+      for (var rr = firstDataRowIndex + dataRows.length; rr < footerRowIndex; rr++) {
+        var rowClear = table.getRow(rr);
+        for (var cc = 0; cc < rowClear.getNumCells(); cc++) {
+          rowClear.getCell(cc).setText('');
+        }
+      }
+
+      var footerRow = table.getRow(footerRowIndex);
+      footerRow.getCell(colCount - 1).setText(totalText || '');
+
+      if (ndsText) {
+        try {
+          applyNdsTextToDoc(body, ndsText);
+        } catch (ndsErr) {
+          Core.error(ndsErr);
+        }
+      }
+
+      doc.saveAndClose();
+
+      var pdfBlob = copy.getAs(MimeType.PDF).setName(fileName + '.pdf');
+      var pdfFile = destFolder.createFile(pdfBlob);
+      copy.setTrashed(true);
+      return pdfFile;
+
+    } catch (err) {
+      Core.error(err);
+      return null;
+    }
+  }
+
+  function extractKpTables(sheet) {
+    var startRow = 10;
+    var maxRows = Math.max(sheet.getLastRow() - startRow + 1, 0) || 0;
+    if (maxRows <= 0) return [];
+
+    var range = sheet.getRange(startRow, 11, Math.min(maxRows, 120), 6);
+    var displayValues = range.getDisplayValues();
+    var rawValues = range.getValues();
+    var values = displayValues.map(function (row, rIdx) {
+      return row.map(function (cell, cIdx) {
+        return cell !== '' && cell != null ? cell : (rawValues[rIdx][cIdx] != null ? rawValues[rIdx][cIdx] : '');
+      });
+    });
+
+    var tables = [];
+    var buffer = [];
+    var sectionStart = startRow;
+
+    function flush() {
+      if (!buffer.length) return;
+      tables.push({ startRow: sectionStart, values: buffer.slice() });
+      buffer = [];
+    }
+
+    for (var i = 0; i < values.length; i++) {
+      var row = values[i];
+      var filled = row.some(function (c) { return c !== '' && c != null; });
+      if (filled) buffer.push(row);
+      else {
+        flush();
+        sectionStart = startRow + i + 1;
+      }
+    }
+    flush();
+
+    return tables;
+  }
+
+  return {
+    handle: handle,
+    createKPs: createKPs,
+    createPdfsFromTemplates: createPdfsFromTemplates
+  };
+})();
+
+function createKPs() {
+  return Commercials.createKPs();
+}
+
+function createPdfsFromTemplates() {
+  return Commercials.createPdfsFromTemplates();
+}

@@ -1,0 +1,127 @@
+// Archive.gs
+var Archive = (function () {
+  var ARCHIVE_FOLDER_NAME = (Core.config.drive && Core.config.drive.archiveFolderName) || 'Архивы';
+  var ARCHIVE_FOLDER_ID = (Core.config.drive && Core.config.drive.archiveFolderId) || '';
+  var TRIGGER_HANDLER = 'runDailyBackup';
+  var ARCHIVE_TIMEZONE = 'Europe/Moscow';
+
+  function handle(request) {
+    switch (request.action) {
+      case 'downloadProjectArchive':
+        return { success: true, data: buildManualArchive() };
+      default:
+        throw new Error('Unknown archive action: ' + request.action);
+    }
+  }
+
+  function ensureDailyBackupTrigger() {
+    var triggers = ScriptApp.getProjectTriggers();
+    var hasTrigger = triggers.some(function (trigger) {
+      return trigger.getHandlerFunction && trigger.getHandlerFunction() === TRIGGER_HANDLER;
+    });
+    if (!hasTrigger) {
+      ScriptApp.newTrigger(TRIGGER_HANDLER)
+        .timeBased()
+        .everyDays(1)
+        .atHour(0)
+        .nearMinute(0)
+        .create();
+    }
+  }
+
+  function runDailyBackup() {
+    createArchiveFile(new Date());
+  }
+
+  function buildManualArchive() {
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    if (!spreadsheet) {
+      throw new Error('Не удалось определить активную таблицу для экспорта.');
+    }
+    var exportUrl = buildExportUrl(spreadsheet.getId());
+    return {
+      downloadUrl: exportUrl
+    };
+  }
+
+  function createArchiveFile(date) {
+    var folder = getOrCreateArchiveFolder(date);
+    var name = buildArchiveName(date);
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    if (!spreadsheet) {
+      throw new Error('Не удалось определить активную таблицу для экспорта.');
+    }
+    var blob = DriveApp.getFileById(spreadsheet.getId())
+      .getBlob()
+      .getAs(MimeType.MICROSOFT_EXCEL);
+    blob.setName(name + '.xlsx');
+    return folder.createFile(blob);
+  }
+
+  function getOrCreateArchiveFolder(date) {
+    var root = getArchiveRootFolder();
+    var monthFolderName = buildMonthFolderName(date);
+    var monthIter = root.getFoldersByName(monthFolderName);
+    if (monthIter.hasNext()) return monthIter.next();
+    return root.createFolder(monthFolderName);
+  }
+
+  function getArchiveRootFolder() {
+    if (!ARCHIVE_FOLDER_ID) {
+      throw new Error('Не настроен ID папки для архивов.');
+    }
+    try {
+      return DriveApp.getFolderById(ARCHIVE_FOLDER_ID);
+    } catch (err) {
+      Core.error(err);
+      throw new Error('Не удалось получить доступ к папке архивов. Проверьте права доступа.');
+    }
+  }
+
+  function buildArchiveName(date) {
+    var d = date instanceof Date ? date : new Date(date);
+    if (isNaN(d)) d = new Date();
+    var formatted = Utilities.formatDate(d, ARCHIVE_TIMEZONE, 'dd.MM.yyyy');
+    return 'Архив ' + formatted;
+  }
+
+  function buildMonthFolderName(date) {
+    var d = date instanceof Date ? date : new Date(date);
+    if (isNaN(d)) d = new Date();
+    var monthIndex = parseInt(Utilities.formatDate(d, ARCHIVE_TIMEZONE, 'M'), 10) - 1;
+    var months = [
+      'Январь',
+      'Февраль',
+      'Март',
+      'Апрель',
+      'Май',
+      'Июнь',
+      'Июль',
+      'Август',
+      'Сентябрь',
+      'Октябрь',
+      'Ноябрь',
+      'Декабрь'
+    ];
+    return months[monthIndex] || ARCHIVE_FOLDER_NAME;
+  }
+
+  function buildExportUrl(spreadsheetId) {
+    return 'https://docs.google.com/spreadsheets/d/' + spreadsheetId + '/export?format=xlsx';
+  }
+
+
+  return {
+    handle: handle,
+    ensureDailyBackupTrigger: ensureDailyBackupTrigger,
+    runDailyBackup: runDailyBackup
+  };
+})();
+
+function runDailyBackup() {
+  try {
+    Archive.runDailyBackup();
+  } catch (err) {
+    Core.error(err);
+  }
+}

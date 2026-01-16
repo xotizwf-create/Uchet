@@ -1,0 +1,19 @@
+{% extends "auth/layout.html" %}
+{% block content %}
+  <h1>Регистрация по Email</h1>
+  <p class="subtitle">Создайте аккаунт и подтвердите его кодом из письма.</p>
+  <form method="post" class="auth-form">
+    <label>
+      Email
+      <input type="email" name="email" required />
+    </label>
+    <label>
+      Пароль
+      <input type="password" name="password" required />
+    </label>
+    <button class="primary-btn" type="submit">Получить код</button>
+  </form>
+  <p class="auth-hint">
+    Уже есть аккаунт? <a href="{{ url_for('login_email') }}">Войти</a>
+  </p>
+{% endblock %}

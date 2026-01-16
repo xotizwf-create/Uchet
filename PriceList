@@ -1,0 +1,67 @@
+// PriceList.gs
+const PriceList = (function () {
+
+  // Шапка листа прайс-листа
+  const HEADERS_PRICE = [
+    '№ комплектации / код', // A
+    'Наименование',         // B
+    'Цена без НДС',         // C
+    'Цена с НДС',           // D
+    'Примечание'            // E
+  ];
+
+  function handle(request) {
+    switch (request.action) {
+      case 'list':
+        return { success: true, data: list() };
+
+      // при желании потом добавим create/update/delete
+      default:
+        throw new Error('Unknown pricelist action: ' + request.action);
+    }
+  }
+
+  function list() {
+    // При создании нового листа сразу ставим шапку,
+    // существующий лист не трогаем
+    const sheet = Core.ensureSheet(Core.config.sheets.price, HEADERS_PRICE);
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) {
+      // только заголовок или вообще пусто
+      return [];
+    }
+
+    // читаем только реально используемые строки и первые 5 колонок (A:E)
+    const data = sheet.getRange(1, 1, lastRow, HEADERS_PRICE.length).getValues();
+    const res  = [];
+
+    // ожидаем структуру листа:
+    // A: № комплектации / код
+    // B: Наименование
+    // C: Цена без НДС
+    // D: Цена с НДС
+    // E: Примечание
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+
+      // пропускаем совсем пустые строки
+      if (!row[0] && !row[1]) continue;
+
+      res.push({
+        code:         row[0], // <-- вот это поле ждёт фронт
+        name:         row[1],
+        priceNoVat:   row[2],
+        priceWithVat: row[3],
+        note:         row[4]
+      });
+    }
+
+    return res;
+  }
+
+  return {
+    handle
+  };
+
+})();
