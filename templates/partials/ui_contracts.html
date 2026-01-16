@@ -522,23 +522,23 @@ if (force) {
         '#dataArea{padding:0;background:transparent;}'+
         '.contracts-page{background:#f1f5f9;padding:20px 0 26px;margin:-18px 0 -24px;min-height:100%;box-sizing:border-box;}'+
         '.contracts-host{margin-top:0;padding-top:0;}'+
-        '.contracts-table{width:100%;border-collapse:separate;border-spacing:0 10px;table-layout:fixed;margin-top:12px;background:transparent;border:none;}'+
+        '.contracts-table{width:calc(100% - 48px);border-collapse:separate;border-spacing:0 12px;table-layout:fixed;margin:12px 24px 0;background:transparent;border:none;}'+
         '.contracts-table thead th{position:sticky;top:0;z-index:30;padding:12px 12px;text-align:left;font-weight:700;font-size:11px;color:#94a3b8;background:#eef2f6;letter-spacing:.08em;border:none;text-transform:uppercase;}'+
-        '.contracts-table thead th:first-child{border-top-left-radius:12px;padding-left:18px;}'+
-        '.contracts-table thead th:last-child{border-top-right-radius:12px;padding-right:18px;}'+
+        '.contracts-table thead th:first-child{padding-left:24px;}'+
+        '.contracts-table thead th:last-child{padding-right:24px;}'+
         '.contracts-table td:nth-child(1),.contracts-table th:nth-child(1){width:28%;text-align:left;}'+
         '.contracts-table td:nth-child(2),.contracts-table th:nth-child(2){width:28%;}'+
         '.contracts-table td:nth-child(3),.contracts-table th:nth-child(3){width:28%;}'+
         '.contracts-table td:nth-child(4),.contracts-table th:nth-child(4){width:20%;}'+
-        '.contracts-table tr.data-row{background:#ffffff;border-radius:16px;box-shadow:0 8px 18px rgba(15,23,42,0.06);overflow:hidden;position:relative;border:1px solid #e2e8f0;transition:background-color .12s ease,box-shadow .12s ease,transform .12s ease,border-color .12s ease;}'+
-        '.contracts-table tr.data-row td{padding:12px 16px;vertical-align:middle;font-size:13px;color:#0f172a;line-height:1.2;height:86px;border:none;}'+
+        '.contracts-table tr.data-row{background:#ffffff;border-radius:14px;box-shadow:0 2px 8px rgba(0,0,0,0.02);overflow:hidden;position:relative;border:1px solid #f1f5f9;transition:all 0.2s ease;}'+
+        '.contracts-table tr.data-row td{padding:16px 20px;vertical-align:middle;font-size:13px;color:#0f172a;line-height:1.2;height:100px;border:none;}'+
         '.contracts-table tr.data-row:hover{background:#f8fafc;box-shadow:0 14px 28px rgba(15,23,42,0.12);transform:translateY(-1px);border-color:#c7d2fe;}'+
         '.contracts-table tr.data-row:hover td{background:#f8fafc;}'+
         '.contracts-table tr.data-row-selected{background:#eef2f7 !important;box-shadow:0 14px 28px rgba(15,23,42,0.12);}'+
         '.contracts-table tr.data-row-selected td{background:#eef2f7 !important;}'+
         '.contracts-table td:first-child{border-top-left-radius:16px;border-bottom-left-radius:16px;}'+
         '.contracts-table td:last-child{border-top-right-radius:16px;border-bottom-right-radius:16px;}'+
-        '.cell-main{position:relative;padding:12px 16px 12px 62px !important;}'+
+        '.cell-main{position:relative;padding:12px 20px 12px 20px !important;}'+
         '.cell-main .accent{position:absolute;left:0;top:16px;bottom:16px;width:3px;border-radius:999px;background:#e2e8f0;opacity:0;transition:opacity .12s ease;}'+
         '.contracts-table tr.data-row:hover .cell-main .accent{opacity:1;}'+
         '.cell-main .accent.done{background:#86efac;}'+
@@ -552,7 +552,7 @@ if (force) {
         '.cell-main .date-dot{color:#cbd5e1;font-weight:700;}'+
         '.cell-customer{padding:12px 16px;}'+
         '.cell-customer-wrap{display:flex;align-items:center;gap:10px;min-width:0;width:100%;}'+
-        '.customer-avatar{width:32px;height:32px;border-radius:999px;background:#ffffff;color:#4f46e5;font-weight:800;display:flex;align-items:center;justify-content:center;border:1px solid #e2e8f0;box-shadow:0 6px 14px rgba(79,70,229,0.12);font-size:11px;flex-shrink:0;}'+
+        '.customer-avatar{width:36px;height:36px;border-radius:999px;background:#f8fafc;color:#4f46e5;font-weight:700;display:flex;align-items:center;justify-content:center;border:none;font-size:12px;flex-shrink:0;}'+
         '.customer-info{display:flex;flex-direction:column;gap:3px;min-width:0;}'+
         '.customer-name{font-size:13px;font-weight:700;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'+
         '.customer-sub{font-size:12px;color:#94a3b8;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'+
