@@ -745,6 +745,12 @@ def create_app() -> Flask:
                         response = redirect(url_for("app_index"))
                     _set_trusted_device_cookie(response, device_map)
                     return response
+                if not os.getenv("SMTP_HOST"):
+                    login_user(user)
+                    session.permanent = True
+                    if is_fetch:
+                        return jsonify({"success": True, "redirect": url_for("app_index")})
+                    return redirect(url_for("app_index"))
                 challenge, error = _create_otp_challenge(db_session, user.id, "email", "login")
                 if not challenge:
                     if is_fetch:
