@@ -134,14 +134,14 @@ var UIContracts = (function () {
         '.contracts-refresh-btn{width:36px;height:36px;border-radius:10px;border:none;background:#5c5ce0;color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(92,92,224,0.2);}'+
         '.contracts-refresh-btn svg{width:18px;height:18px;}'+
         '.contracts-subbar{display:block;padding:0;margin:10px 0 0;background:transparent;border:none;position:sticky;top:0;z-index:40;}'+
-        .contracts-filters-card{display:flex;align-items:center;gap:16px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:12px 20px;box-shadow:0 4px 20px rgba(0,0,0,0.03);flex-wrap:nowrap;width:100%;box-sizing:border-box;overflow:hidden; min-height:64px;}'+
+        '.contracts-filters-card{display:flex;align-items:center;gap:16px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:12px 20px;box-shadow:0 4px 20px rgba(0,0,0,0.03);flex-wrap:nowrap;width:100%;box-sizing:border-box;overflow:hidden; min-height:64px;}'+
         '.contracts-filters-card > *{flex:0 0 auto;}'+
         '.contracts-filter{display:flex;flex-direction:row;align-items:center;min-width:auto; height:100%;}'+
         '.contracts-filter .lbl{font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;margin-right:8px;}'+
-        '.contracts-filter select,.contracts-filter input[type="search"],.contracts-filter input[type="text"]{height:40px;border:none;background:transparent;font-size:14px;font-weight:600;color:#1f2937;padding:0;box-shadow:none;}'+
-        '.contracts-filter select:focus,.contracts-filter input[type="search"]:focus,.contracts-filter input[type="text"]:focus{outline:none;border-color:#c7d2fe;box-shadow:0 0 0 2px rgba(99,102,241,0.15);}'+
+        '.contracts-filter select,.contracts-filter input[type="search"],.contracts-filter input[type="text"]{height:40px;border:none;background:transparent;font-size:14px;font-weight:600;color:#1f2937;padding:0;box-shadow:none; outline:none;}'+
+        '.contracts-filter select:focus,.contracts-filter input[type="search"]:focus,.contracts-filter input[type="text"]:focus{outline:none;}'+
         '.contracts-filter input::placeholder{color:#94a3b8;font-weight:600;}'+
-        '.contracts-search{position:relative;min-width:180px;}'+
+        '.contracts-search{position:relative;min-width:180px;margin-right:auto;height:40px;}'+
         '.contracts-search input{padding-left:36px;height:40px;border-radius:12px;background:#f8fafc;width:100%;border:none;font-weight:500;}'+
         '.contracts-search .search-ico{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:16px;height:16px;opacity:.7;background-repeat:no-repeat;background-size:16px 16px;background-image:url("data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.65" y1="16.65" x2="21" y2="21"/></svg>");}'+
         '.contracts-sort-group{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;}'+
@@ -171,12 +171,12 @@ var UIContracts = (function () {
           '<div class="contracts-filter contracts-search" style="margin-right:auto; height:40px;">' +
             
             '<span class="search-ico"></span>' +
-            '<input id="contractsSearch" type="search" placeholder="Поиск по номеру, организации..." style="border:none; background:transparent; font-weight:500;" autocomplete="off">' +
+            '<input id="contractsSearch" type="search" placeholder="Поиск по номеру, организации..." autocomplete="off">' +
           '</div>' +
           '<div class="contracts-divider"></div>' +
           '<div class="contracts-filter">' +
             '<span class="lbl">СТАТУС:</span>' +
-            '<select id="contractsStatusFilter" style="font-weight:600; cursor:pointer;"><option value="" disabled selected hidden>Все статусы</option>' +
+            '<select id="contractsStatusFilter">' +
               '<option value="all">Все статусы</option>' +
               '<option value="inwork">В работе</option>' +
               '<option value="missingDocs">Нет документов</option>' +
