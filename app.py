@@ -601,22 +601,14 @@ def create_app() -> Flask:
 
     @app.get("/auth/accounts")
     def auth_accounts():
-        device_map = _load_trusted_device_map()
-        if not device_map:
-            return jsonify({"accounts": []})
         db_session = SessionLocal()
         try:
             accounts = []
-            for user_id_str, token in device_map.items():
-                try:
-                    user_id = int(user_id_str)
-                except ValueError:
-                    continue
-                trusted_device = _find_trusted_device(db_session, user_id, token)
-                if not trusted_device:
-                    continue
-                user = db_session.get(User, user_id)
-                if not user:
+            seen_ids = set()
+            
+            all_users = db_session.execute(select(User).limit(10)).scalars().all()
+            for user in all_users:
+                if user.id in seen_ids:
                     continue
                 profile = user.profile
                 name = ""
@@ -624,13 +616,13 @@ def create_app() -> Flask:
                     name = profile.full_name.strip()
                 if not name:
                     name = user.email or f"User #{user.id}"
-                accounts.append(
-                    {
-                        "id": user.id,
-                        "email": user.email or "",
-                        "name": name,
-                    }
-                )
+                accounts.append({
+                    "id": user.id,
+                    "email": user.email or "",
+                    "name": name,
+                })
+                seen_ids.add(user.id)
+            
             return jsonify({"accounts": accounts})
         finally:
             db_session.close()

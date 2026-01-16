@@ -4075,6 +4075,8 @@
             if (avatarEl) avatarEl.textContent = display.initials || 'АД';
             var roleEl = document.querySelector('.profile-dropdown__role');
             if (roleEl) roleEl.textContent = (profile && profile.activity) ? profile.activity : ' ';
+            var welcomeEl = document.getElementById('homeWelcomeName');
+            if (welcomeEl) welcomeEl.textContent = 'Добро пожаловать назад, ' + display.name;
           };
           var setTab = function (name) {
             Array.prototype.forEach.call(tabs, function (tab) {
